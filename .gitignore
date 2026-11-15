@@ -1,0 +1,21 @@
+# Environment & Secrets
+.env
+.env.*
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Development Tickets & Local Task Briefs
+tickets/
+
+# Helper / Generator Scripts (not part of chatbot codebase)
+generate_gantt_charts.py
+
+# IDE & OS Metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
