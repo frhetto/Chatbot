@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 import logging
 from typing import Any, AsyncGenerator, Dict, Optional
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -401,6 +401,19 @@ def create_app(
     async def favicon() -> Response:
         """Return 204 No Content for browser favicon requests."""
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.api_route("/auth/callback", methods=["GET", "POST"])
+    async def auth_callback(request: Request) -> JSONResponse:
+        """Handle Meta OAuth authentication callbacks."""
+        params = dict(request.query_params)
+        return JSONResponse(
+            content={
+                "status": "authenticated",
+                "message": "Authentication callback received successfully.",
+                "params": params,
+            },
+            status_code=status.HTTP_200_OK,
+        )
 
     return app
 
