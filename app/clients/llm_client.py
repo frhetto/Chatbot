@@ -211,9 +211,9 @@ class InMemoryLLMClient(BaseLLMClient):
         history = self._extract_conversation_history(prompt)
 
         clean_q = user_query.strip().lower()
-        is_meettabb = "meettabb" in rag_context.lower() or "aktivlik" in rag_context.lower() or "meettabb" in prompt.lower()
         merchant_match = re.search(r"assistant for '([^']+)'", prompt)
         merchant_name = merchant_match.group(1) if merchant_match else ""
+        is_meettabb = "meettabb" in merchant_name.lower() or "meettabb" in rag_context.lower()
 
         # Check for conversational greeting intent
         q_tokens = [t for t in re.findall(r"\w+", clean_q) if t]

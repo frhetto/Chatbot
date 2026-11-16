@@ -52,8 +52,15 @@ def get_engine(db_url: Optional[str] = None, force_new: bool = False) -> Engine:
         )
         Base.metadata.create_all(engine)
     else:
+        target_url = url
+        if target_url.startswith("postgresql://") and not target_url.startswith("postgresql+"):
+            try:
+                import psycopg  # noqa: F401
+            except ImportError:
+                target_url = target_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+
         try:
-            engine = create_engine(url, pool_pre_ping=True)
+            engine = create_engine(target_url, pool_pre_ping=True)
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             Base.metadata.create_all(engine)

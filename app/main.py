@@ -15,7 +15,7 @@ from typing import Any, AsyncGenerator, Dict, Optional
 
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import text
 
