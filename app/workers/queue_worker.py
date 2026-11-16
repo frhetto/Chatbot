@@ -23,8 +23,8 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from uuid import UUID, uuid4
 
 from app.core.redis import InMemoryRedisClient, get_in_memory_redis_client
-from app.models.enums import DeliveryStatus, MessageDirection, PlatformChannel
-from app.models.schemas import IncomingWebhookEvent, ProcessingResult
+from app.models.enums import DeliveryStatus, LanguageCode, MessageDirection, PlatformChannel
+from app.models.schemas import IncomingWebhookEvent, LLMResponse, ProcessingResult
 
 logger = logging.getLogger("app.workers.queue_worker")
 
@@ -249,33 +249,27 @@ class QueueConsumerWorker:
                 logger.debug("Could not resolve tenant by ID %s: %s", tenant_id, e)
 
         if tenant is None and hasattr(tenant_svc, "business_repository"):
-            all_tenants = tenant_svc.business_repository.list_all()
-            for t in all_tenants:
-                if (
-                    (t.fb_page_id and str(t.fb_page_id) == str(event.recipientId))
-                    or (t.meta_phone_number_id and str(t.meta_phone_number_id) == str(event.recipientId))
-                    or (t.meta_waba_id and str(t.meta_waba_id) == str(event.recipientId))
-                ):
-                    tenant = t.to_pydantic() if hasattr(t, "to_pydantic") else t
-                    break
-
-            if tenant is None and all_tenants:
-                first = all_tenants[0]
-                tenant = first.to_pydantic() if hasattr(first, "to_pydantic") else first
+            recipient_id = getattr(event, "recipientId", None) or getattr(event, "recipient_id", None)
+            if recipient_id:
+                if hasattr(tenant_svc, "resolve_tenant_by_asset_id"):
+                    tenant = tenant_svc.resolve_tenant_by_asset_id(str(recipient_id))
+                elif hasattr(tenant_svc.business_repository, "get_by_meta_asset_id"):
+                    t_orm = tenant_svc.business_repository.get_by_meta_asset_id(str(recipient_id))
+                    if t_orm:
+                        tenant = t_orm.to_pydantic() if hasattr(t_orm, "to_pydantic") else t_orm
 
         if tenant is None:
-            # Provision default merchant profile for local businesses
-            tenant = tenant_svc.create_or_update_business_profile(
-                tenant_id=tenant_id or uuid4(),
-                data={
-                    "businessName": "Baku Gourmet Restaurant",
-                    "businessCategory": "Restoran",
-                    "city": "Bakı",
-                    "phoneContact": "+994125550101",
-                    "fbPageId": str(event.recipientId or "263902037430900"),
-                    "metaPhoneNumberId": str(event.recipientId or "100000000000001"),
-                },
+            logger.warning(
+                "Queue consumer received event %s with invalid/unmapped tenant (tenant_id=%s, recipient_id=%s). Dropping job gracefully.",
+                getattr(event, "eventId", "unknown"),
+                tenant_id,
+                getattr(event, "recipientId", None),
             )
+            return {
+                "status": "DROPPED_UNMAPPED_TENANT",
+                "event_id": getattr(event, "eventId", None),
+                "error": "Unmapped or invalid tenant",
+            }
 
         resolved_tenant_id = (
             tenant.tenantId
@@ -334,8 +328,73 @@ class QueueConsumerWorker:
             )
             return {"status": "HANDOVER_PROCESSED", "resumed": resumed}
 
+        # 5b. Check if session is currently PAUSED_FOR_HUMAN
+        sess_status = getattr(session, "status", None)
+        status_val = sess_status.value if hasattr(sess_status, "value") else str(sess_status or "")
+        if status_val == "PAUSED_FOR_HUMAN":
+            resume_keywords = {"bot", "restart", "davam et", "başla", "davam", "menyu"}
+            clean_word = text.strip().lower()
+
+            # Check if user message is an explicit positive escalation intent while already paused
+            is_new_escalation = lang_engine.is_escalation_intent(text) if lang_engine else False
+
+            if not is_new_escalation:
+                # Automatically unpause the bot session upon handoff refusal, resume keywords, or user inquiry
+                session = session_mgr.resume_bot_session(sess_id)
+                logger.info("Session %s automatically resumed from PAUSED_FOR_HUMAN", sess_id)
+
+                pure_resume_words = resume_keywords.union({
+                    "menecer istəmirəm", "menecer istemirem", "operator istəmirəm", "operator istemirem",
+                    "lazım deyil", "lazim deyil", "ehtiyac yoxdur", "ehtiyac yoxdu", "ehtiyac yox",
+                    "insan istəmirəm", "insan istemirem"
+                })
+                # If the input is purely a resume command or simple refusal without additional query:
+                if clean_word in pure_resume_words:
+                    resumed_reply = LLMResponse(
+                        replyText="Hörmətli müştəri, çatbot yenidən aktivləşdirildi. Sizə necə kömək edə bilərəm?",
+                        language=LanguageCode.AZ,
+                        tokensUsed=0,
+                        escalationTriggered=False,
+                    )
+                    receipt = dispatch_mgr.dispatch_response(
+                        session=session,
+                        customer=customer,
+                        tenant=tenant,
+                        reply=resumed_reply,
+                    )
+                    session_mgr.update_session_activity(
+                        session_id=sess_id,
+                        message_timestamp=event.timestamp,
+                    )
+                    return {"status": "RESUMED", "session_id": str(sess_id), "receipt": receipt}
+                # Otherwise, it's a general inquiry or informal query (e.g. "qiymetleri deyin", "qiymet", "w", "sh", etc.)
+                # Fall through to standard conversational processing (RAG + AI Generation + Outbound Dispatch)
+            else:
+                paused_reply = LLMResponse(
+                    replyText="Hörmətli müştəri, müraciətiniz artıq menecerimizə yönləndirilib. Əməkdaşımız tezliklə sizinlə əlaqə saxlayacaq. Çatbotu yenidən aktiv etmək üçün 'bot' yazın.",
+                    language=LanguageCode.AZ,
+                    tokensUsed=0,
+                    escalationTriggered=False,
+                )
+                receipt = dispatch_mgr.dispatch_response(
+                    session=session,
+                    customer=customer,
+                    tenant=tenant,
+                    reply=paused_reply,
+                )
+                session_mgr.update_session_activity(
+                    session_id=sess_id,
+                    message_timestamp=event.timestamp,
+                )
+                return {
+                    "status": "PAUSED_FOR_HUMAN",
+                    "session_id": str(sess_id),
+                    "receipt": receipt,
+                }
+
         # 6. Escalation Intent Detection & Handover Protocol
-        is_escalation = lang_engine.is_escalation_intent(text) if lang_engine else False
+        history = session_mgr.get_recent_history(sess_id, limit=10)
+        is_escalation = lang_engine.is_escalation_intent(text, history=history) if lang_engine else False
         if is_escalation:
             ticket = handoff_mgr.execute_handoff(
                 session=session,
@@ -343,6 +402,21 @@ class QueueConsumerWorker:
                 tenant=tenant,
                 reason=f"Customer requested human escalation: {text}",
                 trigger_text=text,
+            )
+            lang = lang_engine.detect_language(text) if lang_engine else LanguageCode.AZ
+            from app.clients.llm_client import ESCALATION_MESSAGES
+            escalation_text = ESCALATION_MESSAGES.get(lang, ESCALATION_MESSAGES[LanguageCode.AZ])
+            escalation_reply = LLMResponse(
+                replyText=escalation_text,
+                language=lang,
+                tokensUsed=0,
+                escalationTriggered=True,
+            )
+            receipt = dispatch_mgr.dispatch_response(
+                session=session,
+                customer=customer,
+                tenant=tenant,
+                reply=escalation_reply,
             )
             session_mgr.update_session_activity(
                 session_id=sess_id,
@@ -353,6 +427,8 @@ class QueueConsumerWorker:
                 "status": "ESCALATED",
                 "ticket_id": str(ticket_id) if ticket_id else None,
                 "session_status": "PAUSED_FOR_HUMAN",
+                "receipt": receipt,
+                "reply": escalation_reply,
             }
 
         # 7. Standard Conversational Processing (RAG + AI Generation + Outbound Dispatch)
@@ -371,9 +447,18 @@ class QueueConsumerWorker:
                 rag_context = ""
 
         # 7b. Conversation history buffer
-        history = session_mgr.get_recent_history(sess_id, limit=10)
+        if history is None:
+            history = session_mgr.get_recent_history(sess_id, limit=10)
 
-        # 7c. Localized Dialog Generation
+        # 7c. Localized Dialog Generation (pull latest PostgreSQL tenant configuration)
+        if resolved_tenant_id and hasattr(tenant_svc, "get_business_profile"):
+            try:
+                fresh_tenant = tenant_svc.get_business_profile(resolved_tenant_id)
+                if fresh_tenant is not None:
+                    tenant = fresh_tenant
+            except Exception as e:
+                logger.debug("Failed to refresh tenant profile before dialog generation: %s", e)
+
         reply = dialog_eng.generate_response(
             session=session,
             customer=customer,
@@ -392,6 +477,12 @@ class QueueConsumerWorker:
                 reason=f"Safety guardrail escalation: {text}",
                 trigger_text=text,
             )
+            receipt = dispatch_mgr.dispatch_response(
+                session=session,
+                customer=customer,
+                tenant=tenant,
+                reply=reply,
+            )
             session_mgr.update_session_activity(
                 session_id=sess_id,
                 message_timestamp=event.timestamp,
@@ -401,15 +492,60 @@ class QueueConsumerWorker:
                 "status": "ESCALATED",
                 "ticket_id": str(ticket_id) if ticket_id else None,
                 "session_status": "PAUSED_FOR_HUMAN",
+                "receipt": receipt,
+                "reply": reply,
             }
 
         # 7e. Outbound message formatting & Meta Graph API dispatch
+        # Send app feedback / suggestion notification to Telegram if detected
+        is_fb = getattr(reply, "isFeedback", False) or getattr(reply, "is_feedback", False) or (lang_engine and lang_engine.is_app_feedback(text))
+        if is_fb:
+            t_client = self.telegram_client or getattr(handoff_mgr, "telegram_client", None)
+            if t_client is None:
+                try:
+                    from app.clients.telegram_client import get_telegram_client
+                    t_client = get_telegram_client()
+                except Exception:
+                    t_client = None
+            if t_client and hasattr(t_client, "send_feedback_alert"):
+                try:
+                    b_name = getattr(tenant, "businessName", None) or getattr(tenant, "business_name", "MeeTTabb")
+                    psid = getattr(customer, "platform_scoped_id", None) or getattr(customer, "platformScopedId", str(event.senderId))
+                    sent = t_client.send_feedback_alert(
+                        business_name=b_name,
+                        customer_id=psid,
+                        feedback_text=text,
+                        channel=session.platform,
+                    )
+                    logger.info("Telegram feedback alert sent status: %s", sent)
+                except Exception as fe:
+                    logger.warning("Failed to send Telegram feedback alert: %s", fe)
+
         receipt = dispatch_mgr.dispatch_response(
             session=session,
             customer=customer,
             tenant=tenant,
             reply=reply,
         )
+
+        # Send single extra persuasive follow-up message if available
+        follow_up = getattr(reply, "follow_up_text", None) or getattr(reply, "followUpText", None)
+        if follow_up:
+            follow_up_reply = LLMResponse(
+                replyText=follow_up,
+                language=reply.language,
+                tokensUsed=0,
+                escalationTriggered=False,
+            )
+            try:
+                dispatch_mgr.dispatch_response(
+                    session=session,
+                    customer=customer,
+                    tenant=tenant,
+                    reply=follow_up_reply,
+                )
+            except Exception as ex:
+                logger.warning("Failed to dispatch persuasive follow-up message: %s", ex)
 
         # 7f. Update session activity
         session_mgr.update_session_activity(
@@ -542,6 +678,25 @@ class QueueConsumerWorker:
             type(ex).__name__,
             retry_count,
         )
+
+        # Dispatch Telegram system alert for critical app-breaking dead-letter failures
+        tg = self.telegram_client
+        if tg is None:
+            try:
+                from app.clients.telegram_client import get_telegram_client
+                tg = get_telegram_client()
+            except Exception:
+                tg = None
+
+        if tg is not None:
+            try:
+                err_msg = f"Critical DLQ event failure: {event_id} ({type(ex).__name__}: {str(ex)})"
+                if hasattr(tg, "asend_system_alert"):
+                    await tg.asend_system_alert(error_message=err_msg, severity="CRITICAL")
+                elif hasattr(tg, "send_system_alert"):
+                    tg.send_system_alert(error_message=err_msg, severity="CRITICAL")
+            except Exception as tg_err:
+                logger.error("Failed to dispatch DLQ Telegram system alert: %s", tg_err)
 
     async def run_worker_loop(self) -> None:
         """Continuous asynchronous worker loop polling and processing events with graceful shutdown."""

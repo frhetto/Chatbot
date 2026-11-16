@@ -501,6 +501,21 @@ class TestDirectControllerInvocation:
         raw_bytes = json.dumps(payload).encode("utf-8")
         sig = validator.compute_hmac_sha256(raw_bytes)
 
+        # Seed active tenant profile for WA1 to enable gateway routing
+        from uuid import UUID
+        from app.services.tenant_service import get_tenant_admin_service
+        tenant_svc = get_tenant_admin_service()
+        tenant_svc.create_or_update_business_profile(
+            tenant_id=UUID("00000000-0000-0000-0000-000000000001"),
+            data={
+                "businessName": "Direct Test Tenant",
+                "businessCategory": "Test",
+                "city": "Baku",
+                "phoneContact": "+994120000000",
+                "metaPhoneNumberId": "WA1",
+            },
+        )
+
         response = await controller.handle_incoming_webhook(
             signature_header=sig,
             raw_payload=raw_bytes,

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Union
 from uuid import UUID, uuid4
 
 from cryptography.fernet import Fernet
-from sqlalchemy import Engine, create_engine, select
+from sqlalchemy import Engine, create_engine, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -75,6 +75,22 @@ class BusinessRepository:
     def get_by_fb_page_id(self, page_id: str) -> Optional[BusinessProfileORM]:
         """Lookup a business profile by its bound Facebook Page ID."""
         stmt = select(BusinessProfileORM).where(BusinessProfileORM.fb_page_id == page_id)
+        return self._session.scalars(stmt).first()
+
+    def get_by_meta_asset_id(self, asset_id: str) -> Optional[BusinessProfileORM]:
+        """Lookup active business profile matching Meta asset ID (WABA ID, Phone Number ID, FB Page ID, IG ID)."""
+        if not asset_id:
+            return None
+        asset_str = str(asset_id)
+        stmt = select(BusinessProfileORM).where(
+            BusinessProfileORM.is_active == True,
+            or_(
+                BusinessProfileORM.meta_waba_id == asset_str,
+                BusinessProfileORM.meta_phone_number_id == asset_str,
+                BusinessProfileORM.fb_page_id == asset_str,
+                BusinessProfileORM.ig_business_id == asset_str,
+            ),
+        )
         return self._session.scalars(stmt).first()
 
     def create(self, business: BusinessProfileORM) -> BusinessProfileORM:
@@ -151,11 +167,8 @@ class TenantAdminService:
         ):
             self._db_session = None
         else:
-            self._engine = create_engine(
-                "sqlite:///:memory:",
-                connect_args={"check_same_thread": False},
-                poolclass=StaticPool,
-            )
+            from app.core.database import get_engine
+            self._engine = get_engine()
             Base.metadata.create_all(self._engine)
             self._db_session = Session(self._engine)
             self._owns_session = True
@@ -302,6 +315,10 @@ class TenantAdminService:
         ig_business_id = payload.get("ig_business_id") or payload.get("igBusinessId")
         working_hours_json = payload.get("working_hours_json") or payload.get("workingHoursJson")
         is_active = payload.get("is_active", payload.get("isActive", True))
+        system_prompt = payload.get("system_prompt") or payload.get("systemPrompt")
+        tone_directive = payload.get("tone_directive") or payload.get("toneDirective")
+        escalation_threshold = payload.get("escalation_threshold", payload.get("escalationThreshold"))
+        custom_rules = payload.get("custom_rules") or payload.get("customRules")
 
         if existing is not None:
             if business_name is not None:
@@ -330,6 +347,14 @@ class TenantAdminService:
                 )
             if is_active is not None:
                 existing.is_active = bool(is_active)
+            if system_prompt is not None:
+                existing.system_prompt = str(system_prompt)
+            if tone_directive is not None:
+                existing.tone_directive = str(tone_directive)
+            if escalation_threshold is not None:
+                existing.escalation_threshold = float(escalation_threshold)
+            if custom_rules is not None:
+                existing.custom_rules = list(custom_rules) if isinstance(custom_rules, (list, tuple)) else custom_rules
 
             updated = self._business_repository.update(existing)
             logger.info("Updated BusinessProfile for tenant %s", resolved_id)
@@ -350,6 +375,10 @@ class TenantAdminService:
             else None,
             ig_business_id=str(ig_business_id) if ig_business_id else None,
             working_hours_json=str(working_hours_json) if working_hours_json else None,
+            system_prompt=str(system_prompt) if system_prompt else None,
+            tone_directive=str(tone_directive) if tone_directive else None,
+            escalation_threshold=float(escalation_threshold) if escalation_threshold is not None else 0.70,
+            custom_rules=list(custom_rules) if isinstance(custom_rules, (list, tuple)) else custom_rules,
             is_active=bool(is_active),
             created_at=datetime.now(timezone.utc),
         )
@@ -364,6 +393,25 @@ class TenantAdminService:
         if orm is None:
             return None
         return orm.to_pydantic()
+
+    def resolve_tenant_by_asset_id(self, asset_id: Optional[str]) -> Optional[BusinessProfile]:
+        """Resolve business profile by Meta asset ID (WABA ID, Phone Number ID, FB Page ID, IG ID)."""
+        if not asset_id:
+            return None
+        if hasattr(self._business_repository, "get_by_meta_asset_id"):
+            orm = self._business_repository.get_by_meta_asset_id(str(asset_id))
+            if orm is not None:
+                return orm.to_pydantic() if hasattr(orm, "to_pydantic") else orm
+        elif hasattr(self._business_repository, "list_all"):
+            for t in self._business_repository.list_all():
+                if (
+                    (t.fb_page_id and str(t.fb_page_id) == str(asset_id))
+                    or (t.ig_business_id and str(t.ig_business_id) == str(asset_id))
+                    or (t.meta_phone_number_id and str(t.meta_phone_number_id) == str(asset_id))
+                    or (t.meta_waba_id and str(t.meta_waba_id) == str(asset_id))
+                ):
+                    return t.to_pydantic() if hasattr(t, "to_pydantic") else t
+        return None
 
     def configure_facebook_page_credentials(
         self,
@@ -441,6 +489,9 @@ class TenantAdminService:
             Dictionary containing indexing summary: document title, chunks count, status.
         """
         t_id = UUID(str(tenant_id))
+        tenant = self._business_repository.get_by_id(t_id)
+        if tenant is None:
+            raise KeyError(f"Business tenant '{t_id}' not found in Store D1.")
 
         if not file_type:
             file_type = filename.rsplit(".", 1)[-1] if "." in filename else "txt"

@@ -35,6 +35,7 @@ class MetaWebhookController:
         validator: Optional[WebhookAuthValidator] = None,
         normalizer: Optional[WebhookPayloadNormalizer] = None,
         queue_producer: Optional[QueueProducer] = None,
+        tenant_service: Optional[Any] = None,
     ) -> None:
         """Initialize the webhook controller with optional custom validator, normalizer, and queue producer.
 
@@ -42,11 +43,54 @@ class MetaWebhookController:
             validator: Cryptographic signature and handshake validator (defaults to system singleton).
             normalizer: Multi-channel payload normalizer (defaults to WebhookPayloadNormalizer).
             queue_producer: Optional QueueProducer for buffering events into Redis queue.
+            tenant_service: Optional TenantAdminService for dynamic tenant resolution.
         """
         self.validator: WebhookAuthValidator = validator or get_webhook_auth_validator()
         self.normalizer: WebhookPayloadNormalizer = normalizer or WebhookPayloadNormalizer()
         self.queue_producer: Optional[QueueProducer] = queue_producer
+        self.tenant_service: Optional[Any] = tenant_service
         self.routed_events: List[IncomingWebhookEvent] = []
+
+    def resolve_tenant(self, recipient_id: Optional[str]) -> Optional[Any]:
+        """Resolve business profile by Meta asset ID (WABA ID, Phone Number ID, FB Page ID, IG ID)."""
+        if not recipient_id:
+            return None
+        svc = self.tenant_service
+        if svc is not None:
+            if hasattr(svc, "resolve_tenant_by_asset_id"):
+                return svc.resolve_tenant_by_asset_id(str(recipient_id))
+            elif hasattr(svc, "business_repository"):
+                repo = svc.business_repository
+                if hasattr(repo, "get_by_meta_asset_id"):
+                    return repo.get_by_meta_asset_id(str(recipient_id))
+
+        try:
+            from app.core.database import get_db_session, get_engine
+            from app.models.domain import BusinessProfileORM
+            from sqlalchemy import select, or_
+
+            engine = get_engine()
+            session = get_db_session(engine)
+            try:
+                asset_str = str(recipient_id)
+                stmt = select(BusinessProfileORM).where(
+                    BusinessProfileORM.is_active == True,
+                    or_(
+                        BusinessProfileORM.meta_waba_id == asset_str,
+                        BusinessProfileORM.meta_phone_number_id == asset_str,
+                        BusinessProfileORM.fb_page_id == asset_str,
+                        BusinessProfileORM.ig_business_id == asset_str,
+                    ),
+                )
+                orm = session.scalars(stmt).first()
+                if orm is not None:
+                    return orm.to_pydantic()
+                return None
+            finally:
+                session.close()
+        except Exception as exc:
+            logger.debug("Could not query DB session in resolve_tenant: %s", exc)
+            return None
 
     @property
     def queueProducer(self) -> Optional[QueueProducer]:
@@ -140,8 +184,26 @@ class MetaWebhookController:
         # 3. Multi-channel canonical normalization
         events: List[IncomingWebhookEvent] = self.normalizer.normalize_payload(payload_dict)
 
-        # 4. Route events to downstream subscribers/queues
+        # 4. Route events to downstream subscribers/queues with dynamic tenant routing
         for event in events:
+            # Match destination Meta asset ID to specific tenant_id
+            tenant = None
+            if event.tenantId:
+                tenant = event.tenantId
+            elif event.recipientId:
+                tenant = self.resolve_tenant(event.recipientId)
+                if tenant is not None:
+                    resolved_id = getattr(tenant, "tenantId", getattr(tenant, "tenant_id", None))
+                    event.tenantId = resolved_id
+
+            if tenant is None:
+                logger.warning(
+                    "Dynamic routing: Unmapped Meta asset ID '%s' on event %s. Gracefully dropping without queuing.",
+                    event.recipientId,
+                    event.eventId,
+                )
+                continue
+
             res = self.route_payload(event)
             if inspect.isawaitable(res):
                 await res

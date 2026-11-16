@@ -128,8 +128,24 @@ class DialogGenerationEngine:
             Assembled localized system persona string.
         """
         # Format operating hours from tenant profile
-        working_hours_str = self._format_working_hours(tenant.workingHoursJson)
+        working_hours_json = getattr(tenant, "workingHoursJson", getattr(tenant, "working_hours_json", None))
+        working_hours_str = self._format_working_hours(working_hours_json)
         lang_name = LANGUAGE_NAMES.get(lang, "Azərbaycan dili")
+
+        # Dynamic persona styling tailored from active tenant configuration
+        tone_directive = getattr(tenant, "toneDirective", getattr(tenant, "tone_directive", None))
+        if tone_directive:
+            tone_bullets = [
+                f"- {line.strip().lstrip('-').strip()}"
+                for line in str(tone_directive).split("\n")
+                if line.strip()
+            ]
+        else:
+            tone_bullets = [
+                "- Address the customer with authentic Azerbaijani commercial warmth and respect ('Hörmətli müştəri', 'Xoş gəlmisiniz!').",
+                "- Maintain an attentive, polite, and service-oriented demeanor reflecting Azerbaijani hospitality.",
+                "- Keep answers concise, factual, and pleasant.",
+            ]
 
         persona_sections: List[str] = [
             "### SYSTEM PERSONA & MERCHANT PROFILE:",
@@ -140,9 +156,7 @@ class DialogGenerationEngine:
             f"Operating Hours: {working_hours_str}",
             "",
             "### BAKU COMMERCE ETIQUETTE & TONE:",
-            "- Address the customer with authentic Azerbaijani commercial warmth and respect ('Hörmətli müştəri', 'Xoş gəlmisiniz!').",
-            "- Maintain an attentive, polite, and service-oriented demeanor reflecting Azerbaijani hospitality.",
-            "- Keep answers concise, factual, and pleasant.",
+            *tone_bullets,
             "",
             "### TARGET LANGUAGE DIRECTIVE:",
             f"- The customer's detected interaction language is: {lang.value} ({lang_name}).",
@@ -150,8 +164,10 @@ class DialogGenerationEngine:
             "- Even when responding in English, Russian, or Turkish, preserve the courteous hospitality of the business.",
         ]
 
-        if system_prompt and system_prompt.strip():
-            persona_sections.extend(["", "### ADDITIONAL SYSTEM INSTRUCTIONS:", system_prompt.strip()])
+        system_prompt_cfg = getattr(tenant, "systemPrompt", getattr(tenant, "system_prompt", None))
+        effective_system_prompt = system_prompt or system_prompt_cfg or ""
+        if effective_system_prompt and effective_system_prompt.strip():
+            persona_sections.extend(["", "### ADDITIONAL SYSTEM INSTRUCTIONS:", effective_system_prompt.strip()])
 
         return "\n".join(persona_sections)
 
@@ -190,7 +206,8 @@ class DialogGenerationEngine:
         lang = self._language_engine.detect_language(user_text)
 
         # 1. Base localized persona
-        persona = self.apply_azerbaijani_persona(system_prompt="", tenant=tenant, lang=lang)
+        system_prompt_cfg = getattr(tenant, "systemPrompt", getattr(tenant, "system_prompt", "")) or ""
+        persona = self.apply_azerbaijani_persona(system_prompt=system_prompt_cfg, tenant=tenant, lang=lang)
 
         # 2. Explicit Language Directive
         target_lang_block = [
@@ -198,7 +215,28 @@ class DialogGenerationEngine:
             f"### TARGET LANGUAGE NAME: {LANGUAGE_NAMES.get(lang, 'Azərbaycan dili')}",
         ]
 
-        # 3. Strict Anti-Hallucination Guardrails
+        # 3. Azerbaijani Informal Internet Slang & Phonetic Typing Interpretation
+        slang_directive_block = [
+            "### AZERBAIJANI INFORMAL INTERNET SLANG & PHONETIC TYPING INTERPRETATION:",
+            "1. Phonetic & Slang Interpretation Directive: Azerbaijani social media and chat users frequently write phonetically without diacritics.",
+            "   - You MUST accurately interpret informal phonetic typing: 'w' or 'sh' as 'ş' (e.g., 'yaxwi'/'yaxshi' -> 'yaxşı', 'wexsi' -> 'şəxsi', 'bawla' -> 'başla', 'wahmat' -> 'şahmat'), 'c' or 'ch' as 'ç' (e.g., 'cox'/'chox' -> 'çox', 'nece' -> 'necə', 'cay' -> 'çay'), 'e' as 'ə' (e.g., 'qiymet' -> 'qiymət', 'tedbir' -> 'tədbir', 'he' -> 'hə'), and colloquial suffixes (e.g., 'yoxdu' -> 'yoxdur', 'hardadi' -> 'haradadır', 'necedi' -> 'neçədir', 'neciyedi' -> 'neçəyədir', 'dostlarimnan' -> 'dostlarımla', 'surmey' -> 'sürmək', 'neyniyim' -> 'nə edim').",
+            "2. Literary Output Enforcement: While you must accurately understand and interpret informal internet slang and phonetic typing, you MUST NEVER mimic the user's typos, slang, or missing diacritics in your response!",
+            "   - You MUST strictly generate all Azerbaijani responses in clean, high-quality, grammatical literary Azerbaijani with proper Latin diacritics (ə, ş, ç, ğ, ö, ü, ı).",
+            "3. Active Recall & Context Continuity: Always actively recall topics from RECENT CONVERSATION HISTORY. If the customer previously discussed an activity (e.g. karting, bowling, cycling) and now asks for budget, venues, or details without repeating the activity name (e.g., 'Daha detalli deye bilersiniz? Texmini ne qeder budcem olmalidir?'), answer accurately for those specific activities!",
+            "4. Anti-Tacky Formatting Enforcement: NEVER start responses with robotic prefixes like 'Hörmətli müştəri, məlumatımıza əsasən:'. NEVER use raw list numbering ('1. ', '2. ', '3. '). NEVER output double periods ('..'). Respond in natural, warm, conversational sentences.",
+        ]
+
+        # Dynamic Custom Rules from Tenant Configuration
+        custom_rules = getattr(tenant, "customRules", getattr(tenant, "custom_rules", None))
+        if custom_rules:
+            slang_directive_block.append("### TENANT CUSTOM CONVERSATIONAL RULES:")
+            if isinstance(custom_rules, list):
+                for idx, rule in enumerate(custom_rules, 1):
+                    slang_directive_block.append(f"{idx}. {rule}")
+            elif isinstance(custom_rules, str):
+                slang_directive_block.append(custom_rules)
+
+        # 4. Strict Anti-Hallucination Guardrails
         guardrails = [
             "### STRICT ANTI-HALLUCINATION GUARDRAILS & FACTUAL GROUNDING:",
             "1. You must ONLY answer using the verified facts provided in the Context snippet below.",
@@ -210,7 +248,7 @@ class DialogGenerationEngine:
             "5. Keep the response concise, clear, and formatted for mobile devices (maximum 3-4 short sentences or paragraphs).",
         ]
 
-        # 4. Verified RAG Context Block
+        # 5. Verified RAG Context Block
         rag_block = [
             "### VERIFIED RAG CONTEXT BLOCK START ###",
         ]
@@ -220,7 +258,7 @@ class DialogGenerationEngine:
             rag_block.append("[No verified knowledge context available for this inquiry. Facts are missing.]")
         rag_block.append("### VERIFIED RAG CONTEXT BLOCK END ###")
 
-        # 5. Customer Context
+        # 6. Customer Context
         customer_block = [
             "### CUSTOMER INFORMATION:",
             f"- Customer Channel: {session.platform.value}",
@@ -229,7 +267,7 @@ class DialogGenerationEngine:
         if customer.customerName:
             customer_block.append(f"- Customer Name: {customer.customerName}")
 
-        # 6. Conversation History Buffer (last 5-10 turns)
+        # 7. Conversation History Buffer (last 5-10 turns)
         history_block: List[str] = []
         if history:
             recent_turns = history[-10:]
@@ -239,7 +277,7 @@ class DialogGenerationEngine:
                 body = msg.messageBody.strip()
                 history_block.append(f"[{direction_label}]: {body}")
 
-        # 7. Current User Query & Execution Command
+        # 8. Current User Query & Execution Command
         query_block = [
             "### CURRENT USER QUERY:",
             user_text.strip(),
@@ -254,6 +292,8 @@ class DialogGenerationEngine:
             persona,
             "",
             "\n".join(target_lang_block),
+            "",
+            "\n".join(slang_directive_block),
             "",
             "\n".join(guardrails),
             "",
@@ -290,7 +330,11 @@ class DialogGenerationEngine:
     # Safety Guardrails & Mobile Formatting (Process 5.3)
     # -------------------------------------------------------------------------
 
-    def validate_safety_guardrails(self, generated_text: str) -> str:
+    def validate_safety_guardrails(
+        self,
+        generated_text: str,
+        tenant: Optional[BusinessProfile] = None,
+    ) -> str:
         """Validates and enforces safety guardrails and mobile screen constraints on generated responses.
 
         1. Truncates oversized messages to mobile limits (maximum 1000 characters).
@@ -300,11 +344,12 @@ class DialogGenerationEngine:
 
         Args:
             generated_text: Raw output string from LLM inference.
+            tenant: Optional active business profile for personalized fallback messaging.
 
         Returns:
             Sanitized, mobile-compliant response string.
         """
-        if not generated_text:
+        if not generated_text or not generated_text.strip():
             return ""
 
         text = generated_text.strip()
@@ -323,6 +368,35 @@ class DialogGenerationEngine:
         # Strip trailing whitespace on each line
         lines = [line.rstrip() for line in text.split("\n")]
         text = "\n".join(lines).strip()
+
+        # 2b. Strip tacky robotic prefixes and raw numbering
+        tacky_prefixes = [
+            "Hörmətli müştəri, məlumatımıza əsasən: ",
+            "Hormetli musteri, melumatimiza esasen: ",
+            "Məlumatımıza əsasən: ",
+            "Melumatimiza esasen: ",
+        ]
+        for pfix in tacky_prefixes:
+            if text.startswith(pfix):
+                text = text[len(pfix):].strip()
+
+        # Clean leading numbers like '1. ', '2. '
+        text = re.sub(r"^\d+[\.\)]\s*", "", text).strip()
+        text = re.sub(r"^The following verified factual context[^\n]*\n*", "", text, flags=re.IGNORECASE).strip()
+        if not text and generated_text.strip():
+            biz_name = ""
+            if tenant is not None:
+                if isinstance(tenant, dict):
+                    biz_name = tenant.get("businessName") or tenant.get("business_name") or ""
+                else:
+                    biz_name = getattr(tenant, "businessName", getattr(tenant, "business_name", "")) or ""
+            if biz_name:
+                text = f"{biz_name} barədə əlavə suallarınız varsa, zəhmət olmasa bildirin."
+            else:
+                text = "Zəhmət olmasa bildirin necə kömək edə bilərəm."
+
+        # Sanitize double/triple periods like '..' into '.' (preserve intentional '...')
+        text = re.sub(r"(?<!\.)\.\.(?!\.)", ".", text)
 
         # 3. Mobile screen character length truncation (AC-5)
         if len(text) > MAX_MOBILE_CHARACTERS:
@@ -345,9 +419,13 @@ class DialogGenerationEngine:
 
         return text
 
-    def validateSafetyGuardrails(self, generated_text: str) -> str:
+    def validateSafetyGuardrails(
+        self,
+        generated_text: str,
+        tenant: Optional[BusinessProfile] = None,
+    ) -> str:
         """UML 2.5 CamelCase alias for validate_safety_guardrails."""
-        return self.validate_safety_guardrails(generated_text)
+        return self.validate_safety_guardrails(generated_text, tenant=tenant)
 
     # -------------------------------------------------------------------------
     # Dialog Generation & Execution (Process 5.2, 5.3)
@@ -414,8 +492,17 @@ class DialogGenerationEngine:
             max_tokens=self._max_output_tokens,
         )
 
+        follow_up_msg = None
+        if "### FOLLOW_UP_MESSAGE ###" in raw_reply:
+            parts = raw_reply.split("### FOLLOW_UP_MESSAGE ###", 1)
+            raw_reply = parts[0].strip()
+            follow_up_msg = parts[1].strip()
+
         # 5. Apply safety guardrails and mobile formatting
-        guarded_reply = self.validate_safety_guardrails(raw_reply)
+        guarded_reply = self.validate_safety_guardrails(raw_reply, tenant=tenant)
+        guarded_follow_up = self.validate_safety_guardrails(follow_up_msg, tenant=tenant) if follow_up_msg else None
+
+        is_feedback = self._language_engine.is_app_feedback(user_text)
 
         # 6. Return structured LLMResponse
         return LLMResponse(
@@ -423,6 +510,8 @@ class DialogGenerationEngine:
             language=lang,
             tokensUsed=tokens_used,
             escalationTriggered=False,
+            followUpText=guarded_follow_up,
+            isFeedback=is_feedback,
         )
 
     def generateReply(

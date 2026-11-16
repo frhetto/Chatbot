@@ -52,7 +52,7 @@ class MetaGraphClient:
         self._base_url: str = (base_url or settings.META_GRAPH_API_BASE).rstrip("/")
         self._http_client: Optional[httpx.Client] = http_client
         self._async_http_client: Optional[httpx.AsyncClient] = async_http_client
-        self._system_access_token: Optional[str] = system_access_token
+        self._system_access_token: Optional[str] = system_access_token or getattr(settings, "META_PAGE_ACCESS_TOKEN", None)
 
     @property
     def api_version(self) -> str:
@@ -570,21 +570,26 @@ class MetaGraphClient:
         ig_user_id: str,
         text: str,
         page_token: str = "",
+        ig_business_id: Optional[str] = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> DeliveryReceipt:
         """Dispatch Instagram Direct Message via Meta Graph API (AC-1).
 
-        Dispatches POST to https://graph.facebook.com/v21.0/me/messages.
+        Dispatches POST to https://graph.facebook.com/v21.0/{ig_business_id or 'me'}/messages.
 
         Args:
             ig_user_id: Instagram User Scoped ID.
             text: Plain text content.
             page_token: Facebook Page Access Token with Instagram messaging permissions.
+            ig_business_id: Optional Instagram Business Account ID.
 
         Returns:
             DeliveryReceipt containing external message_id and SENT status.
         """
         token = page_token or self._system_access_token or ""
-        url = f"{self._base_url}/{self._api_version}/me/messages"
+        target = ig_business_id or kwargs.get("ig_account_id") or "me"
+        url = f"{self._base_url}/{self._api_version}/{target}/messages"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -629,10 +634,14 @@ class MetaGraphClient:
         ig_user_id: str,
         text: str,
         page_token: str = "",
+        ig_business_id: Optional[str] = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> DeliveryReceipt:
         """Async variant of send_instagram_direct_message."""
         token = page_token or self._system_access_token or ""
-        url = f"{self._base_url}/{self._api_version}/me/messages"
+        target = ig_business_id or kwargs.get("ig_account_id") or "me"
+        url = f"{self._base_url}/{self._api_version}/{target}/messages"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -1699,6 +1708,9 @@ class InMemoryMetaGraphClient(MetaGraphClient):
         ig_user_id: str,
         text: str,
         page_token: str = "",
+        ig_business_id: Optional[str] = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> DeliveryReceipt:
         if self.should_fail:
             if self.failure_exception:
@@ -1711,6 +1723,7 @@ class InMemoryMetaGraphClient(MetaGraphClient):
             "ig_user_id": ig_user_id,
             "text": text,
             "page_token": page_token,
+            "ig_business_id": ig_business_id,
         }
         self.instagram_messages.append(record)
         self.sent_messages.append(record)
@@ -1727,11 +1740,17 @@ class InMemoryMetaGraphClient(MetaGraphClient):
         ig_user_id: str,
         text: str,
         page_token: str = "",
+        ig_business_id: Optional[str] = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> DeliveryReceipt:
         return self.send_instagram_direct_message(
             ig_user_id=ig_user_id,
             text=text,
             page_token=page_token,
+            ig_business_id=ig_business_id,
+            *args,
+            **kwargs,
         )
 
     def send_messenger_text_message(
@@ -1978,7 +1997,7 @@ _GLOBAL_META_GRAPH_CLIENT: Optional[MetaGraphClient] = None
 
 def get_meta_graph_client(
     client: Optional[MetaGraphClient] = None,
-    use_in_memory: bool = True,
+    use_in_memory: Optional[bool] = None,
 ) -> MetaGraphClient:
     """Return singleton or configured MetaGraphClient instance."""
     global _GLOBAL_META_GRAPH_CLIENT
@@ -1987,10 +2006,11 @@ def get_meta_graph_client(
         return _GLOBAL_META_GRAPH_CLIENT
 
     if _GLOBAL_META_GRAPH_CLIENT is None:
-        if use_in_memory:
+        settings = get_settings()
+        is_mock = use_in_memory if use_in_memory is not None else (settings.ENVIRONMENT == "testing")
+        if is_mock:
             _GLOBAL_META_GRAPH_CLIENT = InMemoryMetaGraphClient()
         else:
-            settings = get_settings()
             _GLOBAL_META_GRAPH_CLIENT = MetaGraphClient(
                 api_version=settings.META_GRAPH_API_VERSION,
                 base_url=settings.META_GRAPH_API_BASE,

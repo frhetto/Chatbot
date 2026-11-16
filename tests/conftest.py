@@ -25,10 +25,15 @@ from sqlalchemy.orm import Session
 from app.api.webhook import set_webhook_controller
 from app.clients.embedding_client import InMemoryEmbeddingClient
 from app.clients.llm_client import InMemoryLLMClient
-from app.clients.meta_graph_client import InMemoryMetaGraphClient
+from app.clients.meta_graph_client import InMemoryMetaGraphClient, get_meta_graph_client, reset_meta_graph_client
 from app.clients.pinecone_client import InMemoryPineconeClient, get_pinecone_client, reset_in_memory_pinecone
 from app.clients.telegram_client import InMemoryTelegramClient, get_telegram_client, reset_telegram_client
 from app.core.config import get_settings, settings
+
+# Force test environment isolated in-memory DB and mocks
+settings.DATABASE_URL = "sqlite:///:memory:"
+settings.PINECONE_API_KEY = ""
+
 from app.core.database import close_db, get_db_session, get_engine, init_db, reset_db
 from app.core.redis import InMemoryRedisClient, close_redis_client, get_in_memory_redis_client
 from app.core.security import WebhookAuthValidator, get_webhook_auth_validator
@@ -37,13 +42,14 @@ from app.models.domain import Base, BusinessProfile
 from app.models.enums import PlatformChannel
 from app.services.dialog_engine import DialogGenerationEngine
 from app.services.handoff_manager import HandoffEscalationManager
+from app.services.knowledge_service import reset_knowledge_service
 from app.services.language_engine import LanguageDetectionEngine
 from app.services.normalizer import WebhookPayloadNormalizer
 from app.services.outbound_dispatcher import OutboundDispatchManager
 from app.services.queue import QueueProducer
 from app.services.rag_orchestrator import RAGOrchestrator
 from app.services.session_manager import ConversationSessionManager
-from app.services.tenant_service import TenantAdminService
+from app.services.tenant_service import TenantAdminService, reset_tenant_admin_service
 from app.workers.queue_worker import QueueConsumerWorker, reset_queue_worker
 
 
@@ -61,16 +67,22 @@ def clean_system_state():
     """Reset all global in-memory state and singletons between test runs."""
     _sync_reset_in_memory_redis()
     reset_in_memory_pinecone()
+    reset_knowledge_service()
     reset_telegram_client()
     reset_queue_worker()
+    reset_tenant_admin_service()
     set_webhook_controller(None)
+    get_meta_graph_client(client=InMemoryMetaGraphClient())
     reset_db()
     yield
     _sync_reset_in_memory_redis()
     reset_in_memory_pinecone()
+    reset_knowledge_service()
     reset_telegram_client()
     reset_queue_worker()
+    reset_tenant_admin_service()
     set_webhook_controller(None)
+    reset_meta_graph_client()
     close_db()
 
 

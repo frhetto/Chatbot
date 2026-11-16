@@ -633,6 +633,21 @@ class TestWebhookControllerQueueIntegration:
         controller = MetaWebhookController(queue_producer=queue_producer)
         validator = WebhookAuthValidator()
 
+        # Seed active tenant profile for PAGE_ID to enable dynamic gateway routing
+        from uuid import UUID
+        from app.services.tenant_service import get_tenant_admin_service
+        tenant_svc = get_tenant_admin_service()
+        tenant_svc.create_or_update_business_profile(
+            tenant_id=UUID("00000000-0000-0000-0000-000000000002"),
+            data={
+                "businessName": "Queue Deduplication Tenant",
+                "businessCategory": "Test",
+                "city": "Baku",
+                "phoneContact": "+994120000000",
+                "fbPageId": "PAGE_ID",
+            },
+        )
+
         payload = {
             "object": "page",
             "entry": [

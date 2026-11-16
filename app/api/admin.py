@@ -108,6 +108,7 @@ def get_admin_service() -> TenantAdminService:
 
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+admin_root_router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 @router.post(
@@ -257,8 +258,22 @@ async def upload_catalog_route(
             content=raw_bytes,
             file_type=file_type,
         )
-    except KeyError as exc:
+    except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@admin_root_router.post(
+    "/tenants/{tenant_id}/catalog/upload",
+    status_code=status.HTTP_200_OK,
+    summary="Upload product catalog or menu file (root admin alias)",
+)
+async def upload_catalog_root_route(
+    tenant_id: UUID,
+    request: Request,
+    service: TenantAdminService = Depends(get_admin_service),
+) -> Dict[str, Any]:
+    """Ingest menu, price list, or FAQ file (.txt, .md, .json, .csv, .pdf) and index embeddings in Pinecone."""
+    return await upload_catalog_route(tenant_id=tenant_id, request=request, service=service)
 
 
 @router.get(

@@ -291,7 +291,7 @@ class KnowledgeIngestionService:
                 },
             })
 
-        self._pinecone_client.upsert(vectors=vector_records)
+        self._pinecone_client.upsert(vectors=vector_records, namespace=tenant_id_str)
         return len(vector_records)
 
     # UML 2.5 CamelCase Aliases
@@ -317,3 +317,9 @@ def get_knowledge_service(
     if _GLOBAL_KNOWLEDGE_SERVICE is None:
         _GLOBAL_KNOWLEDGE_SERVICE = KnowledgeIngestionService()
     return _GLOBAL_KNOWLEDGE_SERVICE
+
+
+def reset_knowledge_service() -> None:
+    """Reset the global KnowledgeIngestionService singleton."""
+    global _GLOBAL_KNOWLEDGE_SERVICE
+    _GLOBAL_KNOWLEDGE_SERVICE = None

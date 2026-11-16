@@ -43,6 +43,12 @@ _AZ_VOCABULARY: Set[str] = {
     "ünvanınız", "unvaniniz", "şəhər", "seher", "baxın", "baxin",
     "buyurun", "zəng", "zeng", "sifariş", "sifaris", "bunun", "nədir",
     "nedir", "nə", "ne", "bizim", "sizin", "mən", "men", "sizə", "size",
+    "meettabb", "meettab", "aktivlik", "aktivliklər", "aktivlikler",
+    "kartinq", "karting", "bovlinq", "bowling", "velosiped", "velo",
+    "peyntbol", "paintball", "kvest", "kvestlər", "kvestler", "şahmat", "wahmat",
+    "futbol", "tədbir", "tedbir", "tədbirlər", "tedbirler", "yoldaş",
+    "yoldas", "dostlar", "dostlarımla", "dostlarimnan", "monopoly",
+    "mafia", "böyükşor", "boyuksor", "bulvar", "velopark", "oyun", "oyunlar",
 }
 
 _TR_VOCABULARY: Set[str] = {
@@ -147,6 +153,46 @@ _COLLOQUIAL_WORD_MAP: Dict[str, str] = {
     "musteri": "müştəri",
     "temsilcisi": "təmsilçisi",
     "filialiniz": "filialınız",
+    "yoxdu": "yoxdur",
+    "hardadi": "haradadır",
+    "necedi": "neçədir",
+    "neciyedi": "neçəyədir",
+    "tedbir": "tədbir",
+    "tedbirler": "tədbirlər",
+    "yaxwi": "yaxşı",
+    "bawla": "başla",
+    "wexsi": "şəxsi",
+    "dostlarimnan": "dostlarımla",
+    "dostlarnan": "dostlarla",
+    "dostlarimla": "dostlarımla",
+    "karting": "kartinq",
+    "bowling": "bovlinq",
+    "surmey": "sürmək",
+    "surmek": "sürmək",
+    "neyniyim": "nə edim",
+    "neyleyim": "nə edim",
+    "wahmat": "şahmat",
+    "wahmata": "şahmata",
+    "velo": "velosiped",
+    "aktivlik": "aktivlik",
+    "aktivlikler": "aktivliklər",
+    "meettabb": "MeeTTabb",
+    "meettab": "MeeTTabb",
+    "tovsiyye": "tövsiyə",
+    "tovsiye": "tövsiyə",
+    "meslehet": "məsləhət",
+    "peyntbol": "peyntbol",
+    "paintball": "peyntbol",
+    "kvest": "kvest",
+    "kvestler": "kvestlər",
+    "maraqli": "maraqlı",
+    "tetbiq": "tətbiq",
+    "yukle": "yüklə",
+    "yuklemek": "yükləmək",
+    "yarad": "yarat",
+    "devet": "dəvət",
+    "pulsuz": "pulsuz",
+    "odenissiz": "ödənişsiz",
 }
 
 
@@ -233,6 +279,8 @@ class LanguageDetectionEngine:
                 "CH": "ç",
                 "Gh": "ğ",
                 "GH": "ğ",
+                "w": "ş",
+                "W": "ş",
             }
         )
 
@@ -284,10 +332,6 @@ class LanguageDetectionEngine:
         # Preserve Turkish/Azerbaijani dotless I distinctions before lowercasing
         normalized = text.replace("I", "ı").replace("İ", "i").lower()
 
-        # Apply character & digraph substitutions
-        for src, target in self._char_normalization_map.items():
-            normalized = normalized.replace(src.lower(), target)
-
         # Word-level normalization for common colloquialisms
         words = re.findall(r"\w+|[^\w\s]|\s+", normalized, re.UNICODE)
         normalized_tokens: List[str] = []
@@ -297,7 +341,12 @@ class LanguageDetectionEngine:
             if token_lower in _COLLOQUIAL_WORD_MAP:
                 normalized_tokens.append(_COLLOQUIAL_WORD_MAP[token_lower])
             else:
-                normalized_tokens.append(token)
+                tok = token
+                for src, target in self._char_normalization_map.items():
+                    tok = tok.replace(src.lower(), target)
+                if tok.lower() in _COLLOQUIAL_WORD_MAP:
+                    tok = _COLLOQUIAL_WORD_MAP[tok.lower()]
+                normalized_tokens.append(tok)
 
         return "".join(normalized_tokens)
 
@@ -417,22 +466,79 @@ class LanguageDetectionEngine:
         self,
         text: str,
         lang: Optional[Union[LanguageCode, str]] = None,
+        history: Optional[List[Any]] = None,
     ) -> bool:
         """Evaluates whether the customer inquiry requires human agent handoff.
 
         Normalizes input text and evaluates against escalation keyword
-        dictionaries and sentiment patterns for the detected or specified language.
+        dictionaries, conversational history context, and sentiment patterns
+        for the detected or specified language.
 
         Args:
             text: Customer message string.
             lang: Optional LanguageCode or string (e.g. 'AZ'). If None,
                   auto-detected.
+            history: Optional list of recent ChatMessage entities to inspect
+                     prior context (e.g. customer agreeing with "Olar" to an offer).
 
         Returns:
             True if escalation is indicated, False otherwise.
         """
         if not text or not text.strip():
             return False
+
+        clean = text.strip()
+        clean_lower = clean.lower()
+        norm_text = self.normalize_azerbaijani_chars(text)
+        norm_lower = norm_text.lower()
+
+        # Contextual Affirmation Check:
+        # If the bot previously offered manager escalation (e.g. 'sizi menecerimizlə əlaqələndirə bilərəm')
+        # and the customer responds with an affirmation ('Olar', 'Bəli', 'Hə', 'Yaxşı', etc.)
+        if history:
+            last_assistant_msg = None
+            for prev_msg in reversed(history):
+                direction = getattr(prev_msg, "direction", None)
+                dir_val = direction.value if hasattr(direction, "value") else str(direction or "")
+                if dir_val.upper() in ("OUTBOUND", "OUT"):
+                    last_assistant_msg = getattr(prev_msg, "messageBody", None) or getattr(prev_msg, "message_body", "")
+                    break
+
+            if last_assistant_msg:
+                last_lower = last_assistant_msg.lower()
+                offered_escalation = any(
+                    k in last_lower
+                    for k in (
+                        "menecer",
+                        "operator",
+                        "əlaqələndir",
+                        "elaqelendir",
+                        "canlı dəstək",
+                        "canli destek",
+                        "manager",
+                        "human agent",
+                    )
+                )
+                if offered_escalation:
+                    # Check if customer response is a concise affirmative confirmation,
+                    # and NOT a substantive informational inquiry (e.g. "qiymətləri öyrənmək istəyirəm").
+                    tokens = [t for t in re.findall(r"\w+", clean_lower) if t]
+                    inquiry_words = {
+                        "qiymət", "qiymet", "qiymətlər", "qiymetler", "öyrən", "oyren", "öyrənmək", "oyrenmek",
+                        "məlumat", "melumat", "nədir", "nedir", "necə", "nece", "harada", "harda",
+                        "kartinq", "bovlinq", "futbol", "tətbiq", "tetbiq", "app", "xəritə", "xerite"
+                    }
+                    is_inquiry = bool(set(tokens).intersection(inquiry_words))
+                    affirmations = {
+                        "olar", "bəli", "beli", "hə", "he", "yaxşı", "yaxsi", "ok", "okay",
+                        "aha", "əlbəttə", "elbetde", "mümkündürsə", "mumkundurse", "zəhmət",
+                        "zehmet", "buyurun", "bağlayın", "baglayin",
+                        "əlaqələndirin", "elaqelendirin", "keçirdin", "kecirdin", "sure", "yes",
+                        "please", "of course",
+                    }
+                    if not is_inquiry and len(tokens) <= 4:
+                        if tokens and (tokens[0] in affirmations or set(tokens).intersection(affirmations)):
+                            return True
 
         # Resolve language
         target_lang: LanguageCode
@@ -449,19 +555,20 @@ class LanguageDetectionEngine:
         else:
             target_lang = self.detect_language(text)
 
-        # Normalize texts for evaluation
-        norm_text = self.normalize_azerbaijani_chars(text)
-        raw_lower = text.lower()
-        norm_lower = norm_text.lower()
+        # Multi-language Negation Check (AZ, RU, TR, EN):
+        # If customer explicitly expresses refusal or negation ("menecer istəmirəm", "lazım deyil",
+        # "don't want", "не надо", "istemiyorum"), escalation is strictly False.
+        if self._is_negated_escalation(norm_lower, clean_lower):
+            return False
 
         # 1. Primary evaluation in target language
-        if self._matches_escalation(norm_lower, raw_lower, target_lang):
+        if self._matches_escalation(norm_lower, clean_lower, target_lang):
             return True
 
         # 2. Cross-lingual / code-switching fallback (e.g. English keywords in AZ chat)
         for other_lang in self._supported_languages:
             if other_lang != target_lang:
-                if self._matches_escalation(norm_lower, raw_lower, other_lang):
+                if self._matches_escalation(norm_lower, clean_lower, other_lang):
                     return True
 
         return False
@@ -470,21 +577,83 @@ class LanguageDetectionEngine:
         self,
         text: str,
         lang: Optional[Union[LanguageCode, str]] = None,
+        history: Optional[List[Any]] = None,
     ) -> bool:
         """UML 2.5 CamelCase alias for is_escalation_intent."""
-        return self.is_escalation_intent(text, lang)
+        return self.is_escalation_intent(text, lang, history)
 
     def detect_escalation_intent(
         self,
         text: str,
         lang: Optional[Union[LanguageCode, str]] = None,
+        history: Optional[List[Any]] = None,
     ) -> bool:
         """Interface contract alias for is_escalation_intent."""
-        return self.is_escalation_intent(text, lang)
+        return self.is_escalation_intent(text, lang, history)
 
     # -------------------------------------------------------------------------
-    # Internal Escalation Keyword Matching Logic
+    # Internal Escalation Keyword Matching Logic & Negation Filtering
     # -------------------------------------------------------------------------
+
+    def _is_negated_escalation(self, norm_text: str, raw_text: str) -> bool:
+        """Evaluates whether the query contains negative or refusal intent regarding human escalation."""
+        combined = f"{norm_text} {raw_text}".lower()
+
+        # 1. Azerbaijani Negations
+        az_negation_patterns = [
+            r"\b(?:istəmirəm|istemirem|istəmirik|istemirik)\b",
+            r"\b(?:lazım\s+deyil|lazim\s+deyil|lazım\s+yoxdur|lazim\s+yoxdur|lazım\s+deyiləm|lazim\s+deyilem)\b",
+            r"\b(?:ehtiyac\s+yoxdur|ehtiyac\s+yoxdu|ehtiyac\s+yox)\b",
+            r"\b(?:gərək\s+deyil|gerek\s+deyil)\b",
+            r"\b(?:bağlama|baglama|bağlamayın|baglamayin)\b",
+            r"\b(?:qoşma|qosma|qoşmayın|qosmayin)\b",
+            r"\b(?:yönləndirmə|yonlendirme|yönləndirməyin|yonlendirmeyin)\b",
+            r"\b(?:keçirmə|kecirme|keçirməyin|kecirmeyin)\b",
+            r"\b(?:əlaqələndirmə|elaqelendirme|əlaqələndirməyin|elaqelendirmeyin)\b",
+            r"\b(?:danışmaq\s+istəmirəm|danismaq\s+istemirem)\b",
+            r"\b(?:menecer|operator|insan|canlı|canli)\b.*\b(?:istəmirəm|istemirem|lazım\s+deyil|lazim\s+deyil|yoxdur|yoxdu|yox)\b",
+            r"\b(?:istəmirəm|istemirem|lazım\s+deyil|lazim\s+deyil|yoxdur|yoxdu|yox)\b.*\b(?:menecer|operator|insan|canlı|canli)\b",
+        ]
+        for pat in az_negation_patterns:
+            if re.search(pat, combined):
+                return True
+
+        # 2. English Negations
+        en_negation_patterns = [
+            r"\b(?:don'?t\s+want|do\s+not\s+want)\b",
+            r"\b(?:no\s+manager|no\s+operator|no\s+human|no\s+agent)\b",
+            r"\b(?:don'?t\s+need|do\s+not\s+need|no\s+need)\b",
+            r"\b(?:don'?t\s+connect|don'?t\s+transfer|don'?t\s+forward)\b",
+            r"\b(?:not\s+a\s+human|not\s+an\s+operator|not\s+a\s+manager)\b",
+            r"\bwithout\s+(?:a\s+)?(?:manager|operator|human|agent)\b",
+        ]
+        for pat in en_negation_patterns:
+            if re.search(pat, combined):
+                return True
+
+        # 3. Russian Negations
+        ru_negation_patterns = [
+            r"\b(?:не\s+надо|не\s+нужно|не\s+нужен|не\s+нужна|не\s+требуется)\b",
+            r"\b(?:не\s+хочу|не\s+соединяйте|не\s+переключайте|не\s+зовите)\b",
+            r"\b(?:без\s+менеджера|без\s+оператора|без\s+человека)\b",
+            r"\b(?:нет\s+не\s+надо|не\s+надо\s+человека|не\s+надо\s+оператора|не\s+надо\s+менеджера)\b",
+        ]
+        for pat in ru_negation_patterns:
+            if re.search(pat, combined):
+                return True
+
+        # 4. Turkish Negations
+        tr_negation_patterns = [
+            r"\b(?:istemiyorum|istemem|istemiyoruz)\b",
+            r"\b(?:gerek\s+yok|lüzum\s+yok|ihtiyaç\s+yok|ihtiyac\s+yok)\b",
+            r"\b(?:bağlamayın|baglamayin|aktarmayın|aktarmayin|yönlendirmeyin|yonlendirmeyin)\b",
+            r"\b(?:yetkili\s+istemiyorum|temsilci\s+istemiyorum|temsilciye\s+gerek\s+yok|insan\s+istemiyorum)\b",
+        ]
+        for pat in tr_negation_patterns:
+            if re.search(pat, combined):
+                return True
+
+        return False
 
     def _matches_escalation(
         self,
@@ -517,6 +686,10 @@ class LanguageDetectionEngine:
             "elaqe saxla",
             "əlaqə qurun",
             "elaqe qurun",
+            "əlaqəyə keçirdin",
+            "elaqeye kecirdin",
+            "əlaqələndirin",
+            "elaqelendirin",
             "kömək edin",
             "komek edin",
             "kömək lazımdır",
@@ -558,6 +731,11 @@ class LanguageDetectionEngine:
             r"\binsan[a-zəıöüşç]*\b",
             # işləmir / islemir (system broken / not working complaint)
             r"\b(?:işləmir|islemir)\b",
+            # menecer / operator ilə əlaqə / əlaqəyə keçirdin
+            r"\b(?:menecer|operator)[a-zəıöüşç]*\s+(?:ilə|ile|lə|le)\s+(?:əlaqə|elaqe)[a-zəıöüşç]*\b",
+            r"\b(?:əlaqəyə|elaqeye)\s+(?:keçirdin|kecirdin|bağlayın|baglayin|qoşun|qosun)\b",
+            r"\b(?:məni|meni|bizi)\s+(?:menecer|operator)[a-zəıöüşç]*\b",
+            r"\b(?:əlaqələndirin|elaqelendirin|keçirdin|kecirdin)\b",
         ]
 
         for pat in az_stem_patterns:
@@ -664,6 +842,26 @@ class LanguageDetectionEngine:
                 return True
 
         return False
+
+    def is_app_feedback(self, text: str) -> bool:
+        """Determines if the customer message contains a product recommendation or app feedback."""
+        if not text or not text.strip():
+            return False
+        clean = self.normalize_azerbaijani_chars(text).lower()
+        feedback_triggers = [
+            "tövsiyə", "tovsiye", "tövsiyəm", "tovsiyem",
+            "təklif", "teklif", "təklifim", "teklifim", "təklif edirəm", "teklif edirem",
+            "tətbiqə əlavə", "tetbiqe elave", "əlavə etsəniz", "elave etseniz",
+            "əlavə etsəz", "elave etsez", "əlavə edin", "elave edin",
+            "qoysanız", "qoysaz", "qoyun", "əlavə olunsun", "elave olunsun",
+            "olsa əla olar", "olsa ela olar", "olsa yaxşı olar", "olsa yaxsi olar",
+            "maraqlı olardı", "maraqli olardi", "yaxşı olardı", "yaxsi olardi",
+            "məncə tətbiq", "mence tetbiq", "fikrimcə", "fikrimce", "fikrim var",
+            "app recommendation", "feature request", "suggest", "suggestion",
+            "tövsiyə edirəm", "tovsiye edirem", "bir təklif", "bir teklif",
+            "xəritə əlavə", "xerite elave", "marşrutlar üçün", "marsrutlar ucun",
+        ]
+        return any(trig in clean for trig in feedback_triggers)
 
 
 # -----------------------------------------------------------------------------

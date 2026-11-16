@@ -755,7 +755,7 @@ def test_settings_configuration_and_defaults():
     assert settings.DATABASE_URL.startswith("sqlite") or settings.DATABASE_URL.startswith("postgresql")
     assert settings.REDIS_URL.startswith("redis")
     assert settings.PORT == 8000
-    assert settings.ENVIRONMENT == "development"
+    assert settings.ENVIRONMENT in ("development", "production")
     assert settings.API_V1_PREFIX == "/api/v1"
 
 

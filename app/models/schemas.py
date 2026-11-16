@@ -190,6 +190,24 @@ class LLMResponse(BaseModel):
         alias="escalation_triggered",
         description="Whether human handoff was requested or detected",
     )
+    followUpText: Optional[str] = Field(
+        default=None,
+        alias="follow_up_text",
+        description="Optional single extra persuasive follow-up message",
+    )
+    isFeedback: bool = Field(
+        default=False,
+        alias="is_feedback",
+        description="Whether customer message was an app recommendation or feedback",
+    )
+
+    @property
+    def follow_up_text(self) -> Optional[str]:
+        return self.followUpText
+
+    @property
+    def is_feedback(self) -> bool:
+        return self.isFeedback
 
     @property
     def reply_text(self) -> str:

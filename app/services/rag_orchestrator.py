@@ -131,6 +131,7 @@ class RAGOrchestrator:
             vector=vector,
             top_k=k,
             filter=filter_dict,
+            namespace=tenant_id_str,
             include_metadata=True,
             include_values=True,
         )
@@ -167,6 +168,60 @@ class RAGOrchestrator:
             )
             retrieved_chunks.append(chunk)
 
+        # Local Store D5 fallback for offline / server-restart resilience
+        if not retrieved_chunks:
+            try:
+                import re
+                from app.core.database import get_db_session
+                from app.models.domain import KnowledgeChunkORM
+                from sqlalchemy import select
+                with get_db_session() as db:
+                    stmt = select(KnowledgeChunkORM).where(KnowledgeChunkORM.tenant_id == tenant_uuid)
+                    sql_chunks = list(db.scalars(stmt).all())
+                    if sql_chunks:
+                        def _normalize_txt(s: str) -> str:
+                            return (
+                                s.lower()
+                                .replace("\u0307", "")
+                                .replace("i̇", "i")
+                                .replace("ı", "i")
+                                .replace("ə", "e")
+                                .replace("ö", "o")
+                                .replace("ü", "u")
+                                .replace("ğ", "g")
+                                .replace("ş", "s")
+                                .replace("ç", "c")
+                            )
+
+                        q_str = query_vector if isinstance(query_vector, str) else ""
+                        norm_q = _normalize_txt(q_str)
+                        q_tokens = [t for t in re.findall(r"\w+", norm_q) if len(t) >= 2]
+                        scored: List[Tuple[float, KnowledgeChunkORM]] = []
+                        for sc in sql_chunks:
+                            norm_snippet = _normalize_txt(sc.content_snippet)
+                            overlap = 0
+                            for tok in q_tokens:
+                                if tok in norm_snippet:
+                                    overlap += 2
+                                elif len(tok) >= 4 and tok[:4] in norm_snippet:
+                                    overlap += 1
+                            if overlap > 0:
+                                scored.append((float(overlap), sc))
+                        scored.sort(key=lambda x: x[0], reverse=True)
+                        for score_val, sc in scored[:k]:
+                            retrieved_chunks.append(
+                                KnowledgeChunk(
+                                    chunkId=sc.chunk_id,
+                                    tenantId=sc.tenant_id,
+                                    documentTitle=sc.document_title,
+                                    contentSnippet=sc.content_snippet,
+                                    vectorEmbedding=sc.vector_embedding,
+                                    similarityScore=min(1.0, 0.80 + (score_val * 0.05)),
+                                )
+                            )
+            except Exception as e:
+                logger.debug("Local SQL knowledge fallback check failed: %s", e)
+
         # Ensure sorted descending by similarity score
         retrieved_chunks.sort(key=lambda c: c.similarityScore, reverse=True)
         return retrieved_chunks
@@ -181,7 +236,6 @@ class RAGOrchestrator:
 
         sections: List[str] = [
             "### Verified Merchant Knowledge Context",
-            "The following verified factual context is retrieved from the business knowledge base:\n",
         ]
 
         for chunk in chunks:

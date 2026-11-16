@@ -306,12 +306,8 @@ class ConversationSessionManager:
         ):
             self._db_session = None
         else:
-            # Default to in-memory SQLite with StaticPool for cross-session sharing
-            self._engine = create_engine(
-                "sqlite:///:memory:",
-                connect_args={"check_same_thread": False},
-                poolclass=StaticPool,
-            )
+            from app.core.database import get_engine
+            self._engine = get_engine()
             Base.metadata.create_all(self._engine)
             self._db_session = Session(self._engine)
             self._owns_session = True
@@ -571,10 +567,10 @@ class ConversationSessionManager:
         current_turns = getattr(session, "turn_count", 0) or 0
         session.turn_count = current_turns + 1
 
-        # Re-evaluate 24-hour window relative to UTC now
+        # Re-evaluate 24-hour window relative to effective message time
         window_active = self.is_24_hour_window_active(
             session=session,
-            current_time=datetime.now(timezone.utc),
+            current_time=effective_time,
         )
         session.is_window_open = window_active
 
@@ -775,6 +771,27 @@ class ConversationSessionManager:
             if hasattr(updated_session, "to_pydantic")
             else updated_session
         )
+
+    def is_bot_paused(self, session_id: Union[UUID, str]) -> bool:
+        """Check if the session is currently frozen/paused for human agent handoff.
+
+        Args:
+            session_id: Chat session UUID or string.
+
+        Returns:
+            True if status is PAUSED_FOR_HUMAN, False otherwise.
+        """
+        sess_uuid = UUID(str(session_id)) if not isinstance(session_id, UUID) else session_id
+        session = self._session_repository.get_by_id(sess_uuid)
+        if session is None:
+            return False
+        stat = getattr(session, "status", None)
+        stat_val = stat.value if hasattr(stat, "value") else str(stat or "")
+        return stat_val == SessionState.PAUSED_FOR_HUMAN.value
+
+    def isBotPaused(self, session_id: Union[UUID, str]) -> bool:
+        """UML 2.5 CamelCase alias for is_bot_paused."""
+        return self.is_bot_paused(session_id)
 
     def get_recent_history(
         self,

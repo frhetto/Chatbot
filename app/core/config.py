@@ -45,6 +45,10 @@ class Settings(BaseSettings):
         default="263902037430900",
         description="Facebook Page Inbox App ID for Facebook Handover Protocol",
     )
+    META_PAGE_ACCESS_TOKEN: Optional[str] = Field(
+        default=None,
+        description="Default Meta Page Access Token with Instagram/Messenger messaging permissions",
+    )
 
     # Database & Storage Stores
     DATABASE_URL: str = Field(

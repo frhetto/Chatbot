@@ -43,10 +43,12 @@ def get_engine(db_url: Optional[str] = None, force_new: bool = False) -> Engine:
     url = db_url or settings.DATABASE_URL
 
     if "sqlite" in url:
+        clean_url = url.replace("+aiosqlite", "")
+        is_memory = ":memory:" in clean_url
         engine = create_engine(
-            "sqlite:///:memory:" if ":memory:" in url or "sqlite" in url else url,
+            clean_url,
             connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
+            poolclass=StaticPool if is_memory else None,
         )
     else:
         try:

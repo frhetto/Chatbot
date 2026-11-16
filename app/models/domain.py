@@ -148,6 +148,10 @@ class BusinessProfileORM(Base):
     fb_page_access_token_encrypted = Column(Text, nullable=True)
     ig_business_id = Column(String(100), nullable=True)
     working_hours_json = Column(Text, nullable=True)
+    system_prompt = Column(Text, nullable=True)
+    tone_directive = Column(Text, nullable=True)
+    escalation_threshold = Column(Float, default=0.70, nullable=False)
+    custom_rules = Column(JSONType, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
 
@@ -171,6 +175,10 @@ class BusinessProfileORM(Base):
             fbPageAccessTokenEncrypted=self.fb_page_access_token_encrypted,
             igBusinessId=self.ig_business_id,
             workingHoursJson=self.working_hours_json,
+            systemPrompt=self.system_prompt,
+            toneDirective=self.tone_directive,
+            escalationThreshold=self.escalation_threshold if self.escalation_threshold is not None else 0.70,
+            customRules=self.custom_rules,
             createdAt=_ensure_utc(self.created_at),
             isActive=self.is_active,
         )
@@ -230,6 +238,18 @@ class ChatSessionORM(Base):
     customer = relationship("CustomerProfileORM", back_populates="sessions")
     messages = relationship("ChatMessageORM", back_populates="session", cascade="all, delete-orphan")
     tickets = relationship("EscalationTicketORM", back_populates="session", cascade="all, delete-orphan")
+
+    @property
+    def is_bot_paused(self) -> bool:
+        """Indicates if the session is currently frozen/paused for human agent handoff."""
+        stat = getattr(self, "status", None)
+        stat_val = stat.value if hasattr(stat, "value") else str(stat or "")
+        return stat_val == SessionState.PAUSED_FOR_HUMAN.value
+
+    @property
+    def isBotPaused(self) -> bool:
+        """UML 2.5 CamelCase alias for is_bot_paused."""
+        return self.is_bot_paused
 
     def to_pydantic(self) -> "ChatSession":
         return ChatSession(
@@ -406,6 +426,26 @@ class BusinessProfile(BaseModel):
         alias="working_hours_json",
         description="JSON formatted weekly operating hours",
     )
+    systemPrompt: Optional[str] = Field(
+        default=None,
+        alias="system_prompt",
+        description="Custom tenant system prompt",
+    )
+    toneDirective: Optional[str] = Field(
+        default=None,
+        alias="tone_directive",
+        description="Conversational tone directives",
+    )
+    escalationThreshold: float = Field(
+        default=0.70,
+        alias="escalation_threshold",
+        description="Escalation threshold score",
+    )
+    customRules: Optional[List[str]] = Field(
+        default=None,
+        alias="custom_rules",
+        description="Custom conversational rules",
+    )
     createdAt: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         alias="created_at",
@@ -461,6 +501,22 @@ class BusinessProfile(BaseModel):
     def is_active(self) -> bool:
         return self.isActive
 
+    @property
+    def system_prompt(self) -> Optional[str]:
+        return self.systemPrompt
+
+    @property
+    def tone_directive(self) -> Optional[str]:
+        return self.toneDirective
+
+    @property
+    def escalation_threshold(self) -> float:
+        return self.escalationThreshold
+
+    @property
+    def custom_rules(self) -> Optional[List[str]]:
+        return self.customRules
+
     def to_orm(self) -> BusinessProfileORM:
         return BusinessProfileORM(
             tenant_id=self.tenantId,
@@ -474,6 +530,10 @@ class BusinessProfile(BaseModel):
             fb_page_access_token_encrypted=self.fbPageAccessTokenEncrypted,
             ig_business_id=self.igBusinessId,
             working_hours_json=self.workingHoursJson,
+            system_prompt=self.systemPrompt,
+            tone_directive=self.toneDirective,
+            escalation_threshold=self.escalationThreshold,
+            custom_rules=self.customRules,
             created_at=self.createdAt,
             is_active=self.isActive,
         )
@@ -602,6 +662,18 @@ class ChatSession(BaseModel):
     @property
     def escalation_ticket_id(self) -> Optional[UUID]:
         return self.escalationTicketId
+
+    @property
+    def is_bot_paused(self) -> bool:
+        """Indicates if the session is currently frozen/paused for human agent handoff."""
+        stat = getattr(self, "status", None)
+        stat_val = stat.value if hasattr(stat, "value") else str(stat or "")
+        return stat_val == SessionState.PAUSED_FOR_HUMAN.value or stat == SessionState.PAUSED_FOR_HUMAN
+
+    @property
+    def isBotPaused(self) -> bool:
+        """UML 2.5 CamelCase alias for is_bot_paused."""
+        return self.is_bot_paused
 
     def to_orm(self) -> ChatSessionORM:
         return ChatSessionORM(

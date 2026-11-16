@@ -59,6 +59,24 @@ def format_system_alert_markdown(
     return f"⚠️ *Sistem Xətası [{severity}]*\nXəta: {error_message}"
 
 
+def format_feedback_alert_markdown(
+    business_name: str,
+    customer_id: str,
+    feedback_text: str,
+    channel: Union[PlatformChannel, str],
+) -> str:
+    """Format a rich Markdown alert for customer app recommendations & suggestions."""
+    ch_val = channel.value if isinstance(channel, PlatformChannel) else str(channel)
+    lines = [
+        "💡 *Yeni Tətbiq Təklifi / Tövsiyəsi!*",
+        f"🏢 Platforma: {business_name}",
+        f"👤 Müştəri ID: `{customer_id}`",
+        f"📱 Kanal: {ch_val}",
+        f"📝 Təklif / Rəy:\n_{feedback_text}_",
+    ]
+    return "\n".join(lines)
+
+
 class TelegramNotifierClient:
     """Boundary client communicating with Telegram Bot API (Subsystem 6.0, E5)."""
 
@@ -272,6 +290,87 @@ class TelegramNotifierClient:
             return response.status_code == 200
         except Exception as exc:
             logger.error("Failed to deliver async Telegram system alert: %s", exc)
+            return False
+
+    def send_feedback_alert(
+        self,
+        business_name: str,
+        customer_id: str,
+        feedback_text: str,
+        channel: Union[PlatformChannel, str],
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Send rich Telegram alert when customer provides an app recommendation or feedback."""
+        target_chat_id = chat_id or self._default_chat_id
+        if not target_chat_id or not self._bot_token:
+            logger.warning("Telegram feedback alert skipped: bot_token or target_chat_id not configured")
+            return False
+
+        text = format_feedback_alert_markdown(
+            business_name=business_name,
+            customer_id=customer_id,
+            feedback_text=feedback_text,
+            channel=channel,
+        )
+        url = f"{self._base_url}/bot{self._bot_token}/sendMessage"
+        payload = {
+            "chat_id": target_chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
+
+        try:
+            if self._http_client is not None:
+                response = self._http_client.post(url, json=payload, timeout=10.0)
+            else:
+                with httpx.Client(timeout=10.0) as client:
+                    response = client.post(url, json=payload)
+            if response.status_code == 200:
+                logger.info("Telegram feedback alert sent successfully to %s", target_chat_id)
+                return True
+            else:
+                logger.warning("Telegram feedback alert returned status %d: %s", response.status_code, response.text)
+                return False
+        except Exception as exc:
+            logger.error("Failed to deliver Telegram feedback alert: %s", exc)
+            return False
+
+    async def asend_feedback_alert(
+        self,
+        business_name: str,
+        customer_id: str,
+        feedback_text: str,
+        channel: Union[PlatformChannel, str],
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Async variant of send_feedback_alert."""
+        target_chat_id = chat_id or self._default_chat_id
+        if not target_chat_id or not self._bot_token:
+            logger.warning("Telegram feedback alert skipped: bot_token or target_chat_id not configured")
+            return False
+
+        text = format_feedback_alert_markdown(
+            business_name=business_name,
+            customer_id=customer_id,
+            feedback_text=feedback_text,
+            channel=channel,
+        )
+        url = f"{self._base_url}/bot{self._bot_token}/sendMessage"
+        payload = {
+            "chat_id": target_chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
+
+        try:
+            if self._async_http_client is not None:
+                response = await self._async_http_client.post(url, json=payload, timeout=10.0)
+            else:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(url, json=payload)
+            return response.status_code == 200
+        except Exception as exc:
+            logger.error("Failed to deliver async Telegram feedback alert: %s", exc)
             return False
 
     # UML 2.5 Method Aliases & Contracts
@@ -496,6 +595,40 @@ class InMemoryTelegramClient(TelegramNotifierClient):
             chat_id=chat_id,
         )
 
+    def send_feedback_alert(
+        self,
+        business_name: str,
+        customer_id: str,
+        feedback_text: str,
+        channel: Union[PlatformChannel, str],
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        if self.should_fail:
+            if self.failure_exception:
+                raise self.failure_exception
+            return False
+
+        text = format_feedback_alert_markdown(
+            business_name=business_name,
+            customer_id=customer_id,
+            feedback_text=feedback_text,
+            channel=channel,
+        )
+        record = {
+            "type": "FEEDBACK",
+            "business_name": business_name,
+            "customer_id": customer_id,
+            "feedback_text": feedback_text,
+            "channel": channel,
+            "chat_id": chat_id or self._default_chat_id,
+            "text": text,
+        }
+        self.sent_messages.append(record)
+        return self.response_success
+
+    async def asend_feedback_alert(self, *args: Any, **kwargs: Any) -> bool:
+        return self.send_feedback_alert(*args, **kwargs)
+
     def clear(self) -> None:
         """Reset internal message records and failure states."""
         self.sent_alerts.clear()
@@ -514,7 +647,7 @@ _GLOBAL_TELEGRAM_CLIENT: Optional[TelegramNotifierClient] = None
 
 def get_telegram_client(
     client: Optional[TelegramNotifierClient] = None,
-    use_in_memory: bool = True,
+    use_in_memory: Optional[bool] = None,
 ) -> TelegramNotifierClient:
     """Return singleton or configured TelegramNotifierClient instance."""
     global _GLOBAL_TELEGRAM_CLIENT
@@ -523,10 +656,11 @@ def get_telegram_client(
         return _GLOBAL_TELEGRAM_CLIENT
 
     if _GLOBAL_TELEGRAM_CLIENT is None:
-        if use_in_memory:
+        settings = get_settings()
+        is_mock = use_in_memory if use_in_memory is not None else (settings.ENVIRONMENT == "testing")
+        if is_mock:
             _GLOBAL_TELEGRAM_CLIENT = InMemoryTelegramClient()
         else:
-            settings = get_settings()
             if settings.TELEGRAM_BOT_TOKEN and not settings.TELEGRAM_BOT_TOKEN.startswith("mock-"):
                 _GLOBAL_TELEGRAM_CLIENT = TelegramNotifierClient(
                     bot_token=settings.TELEGRAM_BOT_TOKEN,

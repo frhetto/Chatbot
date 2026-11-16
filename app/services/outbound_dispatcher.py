@@ -231,6 +231,17 @@ class OutboundDispatchManager:
     # Facebook Messenger Dispatch & Policy Window Routing
     # =========================================================================
 
+    def _extract_page_token(self, tenant: Union[BusinessProfile, BusinessProfileORM, Any]) -> str:
+        """Extract and decrypt access token from merchant profile."""
+        raw = getattr(tenant, "fb_page_access_token_encrypted", getattr(tenant, "fbPageAccessTokenEncrypted", "")) or ""
+        if not raw:
+            return ""
+        try:
+            from app.services.tenant_service import get_tenant_admin_service
+            return get_tenant_admin_service().decrypt_token(raw)
+        except Exception:
+            return raw
+
     def dispatch_messenger_response(
         self,
         customer: Union[CustomerProfile, CustomerProfileORM],
@@ -252,7 +263,7 @@ class OutboundDispatchManager:
           - Raises MessagingPolicyViolationError (policy boundary enforcement).
         """
         psid = getattr(customer, "platform_scoped_id", getattr(customer, "platformScopedId", ""))
-        page_token = getattr(tenant, "fb_page_access_token_encrypted", getattr(tenant, "fbPageAccessTokenEncrypted", "")) or ""
+        page_token = self._extract_page_token(tenant)
 
         # Determine 24-hour window status
         if window_active is None:
@@ -346,7 +357,7 @@ class OutboundDispatchManager:
         """
         phone = getattr(customer, "platform_scoped_id", getattr(customer, "platformScopedId", ""))
         phone_number_id = getattr(tenant, "meta_phone_number_id", getattr(tenant, "metaPhoneNumberId", None))
-        access_token = getattr(tenant, "fb_page_access_token_encrypted", getattr(tenant, "fbPageAccessTokenEncrypted", None))
+        access_token = self._extract_page_token(tenant)
 
         if window_active is None:
             if session is not None:
@@ -406,7 +417,7 @@ class OutboundDispatchManager:
         """Dispatch pre-approved fallback WhatsApp template for expired 24h windows (AC-5)."""
         phone = getattr(customer, "platform_scoped_id", getattr(customer, "platformScopedId", ""))
         phone_number_id = getattr(tenant, "meta_phone_number_id", getattr(tenant, "metaPhoneNumberId", None))
-        access_token = getattr(tenant, "fb_page_access_token_encrypted", getattr(tenant, "fbPageAccessTokenEncrypted", None))
+        access_token = self._extract_page_token(tenant)
         lang = getattr(customer, "preferred_language", getattr(customer, "preferredLanguage", LanguageCode.AZ))
         customer_name = getattr(customer, "customer_name", getattr(customer, "customerName", "Müştəri")) or "Müştəri"
 
@@ -457,12 +468,14 @@ class OutboundDispatchManager:
     ) -> DeliveryReceipt:
         """Dispatch Instagram Direct Message (AC-1)."""
         ig_user_id = getattr(customer, "platform_scoped_id", getattr(customer, "platformScopedId", ""))
-        page_token = getattr(tenant, "fb_page_access_token_encrypted", getattr(tenant, "fbPageAccessTokenEncrypted", "")) or ""
+        page_token = self._extract_page_token(tenant)
+        ig_business_id = getattr(tenant, "ig_business_id", getattr(tenant, "igBusinessId", None)) or getattr(tenant, "fb_page_id", getattr(tenant, "fbPageId", None))
 
         return self._meta_graph_client.send_instagram_direct_message(
             ig_user_id=ig_user_id,
             text=reply.reply_text,
             page_token=page_token,
+            ig_business_id=ig_business_id,
         )
 
     async def adispatch_instagram_response(
@@ -491,7 +504,7 @@ class OutboundDispatchManager:
     ) -> DeliveryReceipt:
         """Direct tagged message dispatch helper (UML diagram method)."""
         psid = getattr(customer, "platform_scoped_id", getattr(customer, "platformScopedId", ""))
-        token = page_token or getattr(tenant, "fb_page_access_token_encrypted", getattr(tenant, "fbPageAccessTokenEncrypted", "")) or ""
+        token = page_token or self._extract_page_token(tenant)
 
         return self._meta_graph_client.send_messenger_tagged_message(
             psid=psid,
