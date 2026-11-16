@@ -50,22 +50,25 @@ def get_engine(db_url: Optional[str] = None, force_new: bool = False) -> Engine:
             connect_args={"check_same_thread": False},
             poolclass=StaticPool if is_memory else None,
         )
+        Base.metadata.create_all(engine)
     else:
         try:
             engine = create_engine(url, pool_pre_ping=True)
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            Base.metadata.create_all(engine)
         except Exception as exc:
             logger.warning(
-                "Failed to connect to %s (%s). Falling back to SQLite in-memory.",
+                "Failed to connect to database at %s (%s). Falling back to SQLite local database.",
                 url,
                 exc,
             )
+            fallback_url = "sqlite:///chatbot.db"
             engine = create_engine(
-                "sqlite:///:memory:",
+                fallback_url,
                 connect_args={"check_same_thread": False},
-                poolclass=StaticPool,
             )
-
-    Base.metadata.create_all(engine)
+            Base.metadata.create_all(engine)
     _GLOBAL_ENGINE = engine
     _SESSION_FACTORY = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     return engine
