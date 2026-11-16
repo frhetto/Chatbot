@@ -28,6 +28,10 @@ from app.core.redis import close_redis_client, get_redis_client
 from app.services.queue import QueueProducer
 from app.workers.queue_worker import get_queue_worker
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger("app.main")
 
 

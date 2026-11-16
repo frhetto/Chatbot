@@ -196,6 +196,7 @@ class MetaWebhookController:
 
         # 3. Multi-channel canonical normalization
         events: List[IncomingWebhookEvent] = self.normalizer.normalize_payload(payload_dict)
+        logger.info("Normalized %d incoming webhook events from payload", len(events))
 
         # 4. Route events to downstream subscribers/queues with dynamic tenant routing
         for event in events:
@@ -246,7 +247,7 @@ class MetaWebhookController:
                 return None
             receipt = await self.queue_producer.enqueue_event(event)
             self.routed_events.append(event)
-            logger.debug(
+            logger.info(
                 "Enqueued event %s to queue with status %s",
                 event.eventId,
                 receipt.status,

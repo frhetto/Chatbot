@@ -33,6 +33,8 @@ from app.core.config import get_settings, settings
 # Force test environment isolated in-memory DB and mocks
 settings.DATABASE_URL = "sqlite:///:memory:"
 settings.PINECONE_API_KEY = ""
+settings.REDIS_URL = "redis://localhost:6379/0"
+settings.ENVIRONMENT = "development"
 
 from app.core.database import close_db, get_db_session, get_engine, init_db, reset_db
 from app.core.redis import InMemoryRedisClient, close_redis_client, get_in_memory_redis_client

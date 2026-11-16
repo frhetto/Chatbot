@@ -166,7 +166,13 @@ class QueueConsumerWorker:
             List of successfully deserialized IncomingWebhookEvent instances.
         """
         # 1. Pop first element using BLPOP
-        first_item = await self._redis_client.blpop([self._queue_key], timeout=timeout)
+        try:
+            first_item = await self._redis_client.blpop([self._queue_key], timeout=timeout)
+        except Exception as exc:
+            # Catch transient Redis timeout errors without dropping worker loop
+            logger.debug("Redis blpop transient exception: %s", exc)
+            return []
+
         if first_item is None:
             return []
 
@@ -237,6 +243,14 @@ class QueueConsumerWorker:
         dialog_eng = self.dialog_engine or get_dialog_engine()
         dispatch_mgr = self.dispatch_manager or get_outbound_dispatcher(session_manager=session_mgr)
         handoff_mgr = self.handoff_manager or get_handoff_manager(session_manager=session_mgr)
+
+        logger.info(
+            "Executing pipeline for event %s (platform=%s, sender=%s, text='%s')",
+            getattr(event, "eventId", "unknown"),
+            getattr(event, "platform", "unknown"),
+            getattr(event, "senderId", "unknown"),
+            str(event.text or event.payload or "")[:50],
+        )
 
         # 1. Tenant Resolution
         tenant_id = getattr(event, "tenantId", None) or getattr(event, "tenant_id", None)
@@ -527,6 +541,7 @@ class QueueConsumerWorker:
             tenant=tenant,
             reply=reply,
         )
+        logger.info("Pipeline dispatched response for event %s: receipt=%s", getattr(event, "eventId", "unknown"), receipt)
 
         # Send single extra persuasive follow-up message if available
         follow_up = getattr(reply, "follow_up_text", None) or getattr(reply, "followUpText", None)
@@ -704,12 +719,18 @@ class QueueConsumerWorker:
         logger.info("QueueConsumerWorker started loop on queue: %s", self._queue_key)
         try:
             while self._is_running:
-                batch = await self.poll_queue_batch(batch_size=10, timeout=0.5)
-                for event in batch:
-                    if not self._is_running:
+                try:
+                    batch = await self.poll_queue_batch(batch_size=10, timeout=0.5)
+                    for event in batch:
+                        if not self._is_running:
+                            await self.process_event(event)
+                            break
                         await self.process_event(event)
-                        break
-                    await self.process_event(event)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as loop_err:
+                    logger.error("QueueConsumerWorker loop encountered transient error: %s", loop_err, exc_info=True)
+                    await asyncio.sleep(1.0)
         except asyncio.CancelledError:
             logger.info("QueueConsumerWorker loop received CancelledError.")
         finally:

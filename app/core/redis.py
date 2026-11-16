@@ -396,6 +396,9 @@ async def get_redis_client(
     settings = get_settings()
     url = redis_url or settings.REDIS_URL
 
+    if not url:
+        return get_in_memory_redis_client()
+
     if aioredis is None:
         logger.warning("redis-py package is not installed; using in-memory Redis emulator.")
         return get_in_memory_redis_client()
@@ -404,8 +407,8 @@ async def get_redis_client(
         client = aioredis.from_url(
             url,
             decode_responses=True,
-            socket_connect_timeout=0.3,
-            socket_timeout=0.3,
+            socket_connect_timeout=5.0,
+            socket_timeout=5.0,
         )
         await client.ping()
         logger.info("Connected to live Redis server at %s", url)
