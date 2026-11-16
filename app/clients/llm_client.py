@@ -316,9 +316,18 @@ class InMemoryLLMClient(BaseLLMClient):
             if matched_fact:
                 reply = self._format_factual_reply(matched_fact, lang)
             else:
-                lines = [line.strip() for line in rag_context.split("\n") if line.strip() and not line.startswith("#")]
-                if lines:
-                    reply = lines[0]
+                clean_lines = [
+                    line.strip() for line in rag_context.split("\n")
+                    if line.strip()
+                    and not line.startswith("#")
+                    and "verified" not in line.lower()
+                    and "context is retrieved" not in line.lower()
+                    and "knowledge base" not in line.lower()
+                    and "platforması:" not in line.lower()
+                    and not line.endswith(":")
+                ]
+                if clean_lines:
+                    reply = clean_lines[0]
                 else:
                     reply = POLITE_FALLBACK_RESPONSES.get(lang, POLITE_FALLBACK_RESPONSES[LanguageCode.AZ])
 
@@ -1944,7 +1953,11 @@ class InMemoryLLMClient(BaseLLMClient):
         is_karting_query = any(k in u_lower for k in ("kartinq", "karting", "gokart", "böyükşor", "boyuksor"))
         is_bowling_query = any(k in u_lower for k in ("bovlinq", "bowling"))
         is_cycling_query = any(k in u_lower for k in ("velosiped", "velo", "bulvar", "velopark"))
-        is_boardgames_query = any(k in u_lower for k in ("şahmat", "wahmat", "oyun", "monopoly", "mafia", "catan", "board game"))
+        is_sports_query = any(k in u_lower for k in ("idman", "sport", "спорт", "fitness", "fitnes", "məşq", "mesq"))
+        is_boardgames_query = (
+            any(k in u_lower for k in ("şahmat", "wahmat", "monopoly", "mafia", "catan", "board game", "masaüstü", "masaustu", "stolüstü", "stolustu"))
+            or ("oyun" in u_lower and not is_sports_query and not any(k in u_lower for k in ("futbol", "video", "kompyuter", "kompüter")))
+        )
         is_football_query = any(k in u_lower for k in ("futbol", "meydança", "stadion"))
         is_paintball_escape_query = any(k in u_lower for k in ("peyntbol", "paintball", "kvest", "quest"))
         is_meettabb_activity_query = any(k in u_lower for k in ("meettabb", "meettab", "tədbir", "tedbir", "dost", "yoldaş", "yoldas", "tətbiq", "tetbiq", "app", "yüklə", "yukle", "aktivlik"))
@@ -1999,8 +2012,12 @@ class InMemoryLLMClient(BaseLLMClient):
                 if any(k in line_lower for k in ("velosiped", "velo", "bulvar", "velopark")):
                     score += 9
 
+            if is_sports_query:
+                if any(k in line_lower for k in ("idman", "sport", "futbol", "fitnes", "məşq", "stadion", "meydança")):
+                    score += 9
+
             if is_boardgames_query:
-                if any(k in line_lower for k in ("şahmat", "oyun", "monopoly", "mafia", "catan", "board game")):
+                if any(k in line_lower for k in ("şahmat", "monopoly", "mafia", "catan", "board game", "masaüstü", "stolüstü")):
                     score += 9
 
             if is_football_query:

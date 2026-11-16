@@ -286,6 +286,16 @@ async def verify_webhook_endpoint(
     token = hub_verify_token or request.query_params.get("hub_verify_token") or request.query_params.get("verify_token")
     challenge = hub_challenge or request.query_params.get("hub_challenge") or request.query_params.get("challenge")
 
+    if not mode and not token and not challenge:
+        return JSONResponse(
+            content={
+                "status": "online",
+                "endpoint": "Meta Webhook Gateway",
+                "message": "Webhook service is running and ready. Verification handshake requires 'hub.mode', 'hub.verify_token', and 'hub.challenge' parameters from Meta.",
+            },
+            status_code=status.HTTP_200_OK,
+        )
+
     return controller.handle_verification_handshake(
         mode=mode,
         token=token,

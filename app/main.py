@@ -149,7 +149,7 @@ def _seed_default_tenant_and_catalog(pinecone_client: Any) -> None:
                 tenant.working_hours_json = '{"mon-sun": "24/7 (Mobil Tətbiq)"}'
                 db.commit()
 
-            # Ensure clean catalog chunk exists in SQLite
+            # Ensure clean catalog chunks exist in SQL database
             from sqlalchemy import select
             existing_chunks = list(
                 db.scalars(
@@ -160,14 +160,35 @@ def _seed_default_tenant_and_catalog(pinecone_client: Any) -> None:
                 db.delete(old_c)
             db.commit()
 
-            chunk_orm = KnowledgeChunkORM(
-                chunk_id=uuid4(),
-                tenant_id=tenant_id,
-                document_title="meettabb_knowledge.txt",
-                content_snippet=catalog_text,
-                similarity_score=1.0,
-            )
-            db.add(chunk_orm)
+            from scripts.seed_meettabb_knowledge import MEETTABB_CHUNKS
+            emb_client = get_embedding_client()
+            vector_records = []
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            for idx, (title, snippet) in enumerate(MEETTABB_CHUNKS):
+                c_id = uuid4()
+                vec = emb_client.embed(snippet)
+                chunk_orm = KnowledgeChunkORM(
+                    chunk_id=c_id,
+                    tenant_id=tenant_id,
+                    document_title=title,
+                    content_snippet=snippet,
+                    vector_embedding=vec,
+                    similarity_score=1.0,
+                )
+                db.add(chunk_orm)
+                vector_records.append({
+                    "id": str(c_id),
+                    "values": vec,
+                    "metadata": {
+                        "tenant_id": str(tenant_id),
+                        "document_title": title,
+                        "chunk_text": snippet,
+                        "content_snippet": snippet,
+                        "chunk_index": idx,
+                        "created_at": now_iso,
+                    },
+                })
             db.commit()
 
             # Resume any paused sessions so live testing is active
@@ -180,28 +201,18 @@ def _seed_default_tenant_and_catalog(pinecone_client: Any) -> None:
                 s.status = SessionState.ACTIVE.value
             db.commit()
 
-        # Clean old vectors and index fresh catalog into Pinecone
+        # Clean old vectors and index fresh catalog into Pinecone under tenant namespace
         try:
-            pinecone_client.delete(delete_all=True)
+            pinecone_client.delete(delete_all=True, namespace=str(tenant_id))
         except Exception as pe:
-            logger.debug("Pinecone delete_all note: %s", pe)
+            logger.debug("Pinecone delete note: %s", pe)
 
-        emb_client = get_embedding_client()
-        vector = emb_client.embed(catalog_text)
-        pinecone_client.upsert(
-            vectors=[{
-                "id": "meettabb-catalog-1",
-                "values": vector,
-                "metadata": {
-                    "tenant_id": str(tenant_id),
-                    "document_title": "meettabb_knowledge.txt",
-                    "chunk_text": catalog_text,
-                    "content_snippet": catalog_text,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            }]
-        )
-        logger.info("Successfully verified and seeded MeeTTabb tenant profile and Pinecone catalog.")
+        if vector_records:
+            pinecone_client.upsert(
+                vectors=vector_records,
+                namespace=str(tenant_id),
+            )
+        logger.info("Successfully verified and seeded MeeTTabb tenant profile and Pinecone catalog (%d chunks).", len(vector_records))
     except Exception as exc:
         logger.warning("Default tenant seed warning: %s", exc)
 
@@ -385,6 +396,11 @@ def create_app(
             },
             status_code=status_code,
         )
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> Response:
+        """Return 204 No Content for browser favicon requests."""
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     return app
 

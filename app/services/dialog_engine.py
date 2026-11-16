@@ -382,7 +382,12 @@ class DialogGenerationEngine:
 
         # Clean leading numbers like '1. ', '2. '
         text = re.sub(r"^\d+[\.\)]\s*", "", text).strip()
-        text = re.sub(r"^The following verified factual context[^\n]*\n*", "", text, flags=re.IGNORECASE).strip()
+        # Thoroughly strip internal RAG context headers and leak strings
+        text = re.sub(r"(?i)^The following verified factual context[^\n]*\n*", "", text).strip()
+        text = re.sub(r"(?i)^Verified (?:merchant|business) knowledge context[^\n]*\n*", "", text).strip()
+        text = re.sub(r"(?i)^MeeTTabb Tədbir və Aktivlik Platforması[:\.]*\n*", "", text).strip()
+        text = re.sub(r"(?i)^####\s*Source:[^\n]*\n*", "", text).strip()
+        text = re.sub(r"(?i)^###\s*[^\n]+###\n*", "", text).strip()
         if not text and generated_text.strip():
             biz_name = ""
             if tenant is not None:
