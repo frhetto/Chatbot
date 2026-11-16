@@ -85,6 +85,19 @@ class MetaWebhookController:
                 orm = session.scalars(stmt).first()
                 if orm is not None:
                     return orm.to_pydantic()
+
+                # Dynamic fallback: If only one active tenant exists in production, auto-bind
+                all_active = session.scalars(
+                    select(BusinessProfileORM).where(BusinessProfileORM.is_active == True)
+                ).all()
+                if len(all_active) == 1:
+                    single_tenant = all_active[0]
+                    if not single_tenant.ig_business_id or single_tenant.ig_business_id == "17841480465696096":
+                        single_tenant.ig_business_id = asset_str
+                        single_tenant.fb_page_id = asset_str
+                        session.commit()
+                    return single_tenant.to_pydantic()
+
                 return None
             finally:
                 session.close()

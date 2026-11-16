@@ -606,6 +606,15 @@ class MetaGraphClient:
                 with httpx.Client(timeout=10.0) as client:
                     response = client.post(url, headers=headers, json=payload)
 
+            if response.status_code not in (200, 201) and target != "me":
+                logger.info("Instagram direct dispatch to '%s' returned %d; retrying with 'me/messages'...", target, response.status_code)
+                fallback_url = f"{self._base_url}/{self._api_version}/me/messages"
+                if self._http_client is not None:
+                    response = self._http_client.post(fallback_url, headers=headers, json=payload, timeout=10.0)
+                else:
+                    with httpx.Client(timeout=10.0) as client:
+                        response = client.post(fallback_url, headers=headers, json=payload)
+
             if response.status_code in (200, 201):
                 data = response.json()
                 msg_id = data.get("message_id") or f"mid.ig_{uuid4().hex[:12]}"
